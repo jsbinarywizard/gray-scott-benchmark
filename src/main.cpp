@@ -14,8 +14,8 @@
 #include "../common/parameters.hpp"
 #include "../common/output.hpp"
 
-//#include "../kc/gs_kc_blocking.hpp"
 #include "../mpi/gs_mpi_blocking.hpp"
+#include "../kc/gs_kc_blocking.hpp"
 
 namespace {
 
@@ -30,8 +30,8 @@ std::unique_ptr<benchmark<real>> make_benchmark(Backend backend, const Parameter
     switch (backend) {
         case Backend::MPI_BLOCKING:
             return std::make_unique<GS_MPI_Blocking<real>>(parameters);
-        //case Backend::KOKKOSCOMM:
-        //    return std::make_unique<GS_KokkosComm<real>>(parameters);
+        case Backend::KC_BLOCKING:
+            return std::make_unique<GS_KC_Blocking<real>>(parameters);
     }
 
     throw std::runtime_error("Unknown backend.");
