@@ -283,17 +283,17 @@ private:
             send[SE] = Kokkos::subview(field, Range(nr - 2, nr - 1), nc - 2);
             recv[SE] = Kokkos::subview(field, Range(nr - 1, nr), nc - 1);
 
-            send[N] = Kokkos::subview(field, 1, Kokkos::ALL());
-            recv[N] = Kokkos::subview(field, 0, Kokkos::ALL());
+            send[N] = Kokkos::subview(field, 1, Range(1, nc - 1));
+            recv[N] = Kokkos::subview(field, 0, Range(1, nc - 1));
 
-            send[S] = Kokkos::subview(field, nr - 2, Kokkos::ALL());
-            recv[S] = Kokkos::subview(field, nr - 1, Kokkos::ALL());
+            send[S] = Kokkos::subview(field, nr - 2, Range(1, nc - 1));
+            recv[S] = Kokkos::subview(field, nr - 1, Range(1, nc - 1));
 
-            send[W] = Kokkos::subview(field, Kokkos::ALL(), 1);
-            recv[W] = Kokkos::subview(field, Kokkos::ALL(), 0);
+            send[W] = Kokkos::subview(field, Range(1, nr - 1), 1);
+            recv[W] = Kokkos::subview(field, Range(1, nr - 1), 0);
 
-            send[E] = Kokkos::subview(field, Kokkos::ALL(), nc - 2);
-            recv[E] = Kokkos::subview(field, Kokkos::ALL(), nc - 1);
+            send[E] = Kokkos::subview(field, Range(1, nr - 1), nc - 2);
+            recv[E] = Kokkos::subview(field, Range(1, nr - 1), nc - 1);
         }
     };
 
@@ -313,8 +313,7 @@ private:
             if (decomposition.neighbors[dir] == KC_PROC_NULL) {
                 continue;
             }
-            recv_requests[n_recv++] =
-                KokkosComm::recv(*decomposition.comm, b.recv[dir], decomposition.neighbors[dir]);
+            recv_requests.push_back(KokkosComm::recv(*decomposition.comm, b.recv[dir], decomposition.neighbors[dir]));
         }
 
         for (int dir = 0; dir < n_directions; ++dir) {
