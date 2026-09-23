@@ -34,13 +34,17 @@ enum class Scaling {
 // place that needs to know about a new benchmark class.
 enum class Backend {
     MPI_BLOCKING,
-    KC_BLOCKING
+    MPI_NONBLOCKING,
+    KC_BLOCKING,
+    KC_NONBLOCKING
 };
 
 inline const char* backend_name(Backend backend) {
     switch (backend) {
         case Backend::MPI_BLOCKING: return "mpi_blocking";
+        case Backend::MPI_NONBLOCKING: return "mpi_nonblocking";
         case Backend::KC_BLOCKING:   return "kc_blocking";
+        case Backend::KC_NONBLOCKING: return "kc_nonblocking";
     }
     return "unknown";
 }
@@ -49,7 +53,9 @@ inline const char* backend_name(Backend backend) {
 inline const std::vector<Backend>& all_backends() {
     static const std::vector<Backend> backends = {
         Backend::MPI_BLOCKING,
-        Backend::KC_BLOCKING
+        Backend::MPI_NONBLOCKING,
+        Backend::KC_BLOCKING,
+        Backend::KC_NONBLOCKING
     };
     return backends;
 }
