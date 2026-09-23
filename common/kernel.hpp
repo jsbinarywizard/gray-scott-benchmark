@@ -7,7 +7,7 @@
 template<typename real>
 KOKKOS_INLINE_FUNCTION
 void gs_kernel(
-    int i, int j,
+    const int i, const int j,
     const Kokkos::View<real**, Kokkos::LayoutRight>& u,
     const Kokkos::View<real**, Kokkos::LayoutRight>& v,
     Kokkos::View<real**, Kokkos::LayoutRight>& u_temp,
