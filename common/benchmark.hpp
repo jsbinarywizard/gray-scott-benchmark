@@ -48,8 +48,16 @@ public:
 
         results.total_time = iteration_timer.elapsed();
         results.communication_time = communication_seconds;
-        results.updates_per_second =
-            static_cast<double>(parameters.benchmark_iters) / results.total_time;
+
+        int process_count = 1;
+        if (!parameters.strong_scaling)
+            MPI_Comm_size(MPI_COMM_WORLD, &process_count); // For weak scaling, the global problem size is local * process_count, so we need to account for that in updates_per_second.
+        const double total_updates = static_cast<double>(parameters.benchmark_iters) *
+                                     static_cast<double>(parameters.rows) *
+                                     static_cast<double>(parameters.columns) *
+                                     static_cast<double>(process_count);
+
+        results.updates_per_second = total_updates / results.total_time;
     }
 
 protected:
