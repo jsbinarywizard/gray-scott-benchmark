@@ -7,67 +7,37 @@ project(
 )
 
 # ------------------------------------------------------------------------------
-# Options
-# ------------------------------------------------------------------------------
-
-option(
-    ENABLE_DOWNLOAD_FALLBACK
-    "Download dependencies if they cannot be found"
-    ON
-)
-
-# ------------------------------------------------------------------------------
 # Build configuration
 # ------------------------------------------------------------------------------
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
+set(CXXFLAGS = -O3 _DNDEBUG)
 # ------------------------------------------------------------------------------
 # Dependencies
 # ------------------------------------------------------------------------------
 
 find_package(MPI REQUIRED)
+find_package(Kokkos REQUIRED)
 
-find_package(Kokkos 5.1.1 QUIET)
+include(FetchContent)
 
-if(NOT Kokkos_FOUND)
-    if(NOT ENABLE_DOWNLOAD_FALLBACK)
-        message(FATAL_ERROR
-            "Kokkos >= 5.1.1 was not found and "
-            "ENABLE_DOWNLOAD_FALLBACK is OFF."
-        )
-    endif()
+FetchContent_Declare(
+    KokkosComm
+    GIT_REPOSITORY https://github.com/kokkos/kokkos-comm.git
+    GIT_TAG develop
+)
 
-    message(STATUS "Kokkos not found; downloading Kokkos 5.1.1")
-
-    include(FetchContent)
-
-    FetchContent_Declare(
-        Kokkos
-        URL
-            https://github.com/kokkos/kokkos/releases/download/5.1.1/kokkos-5.1.1.zip
-        URL_HASH
-            SHA256=1de49ac660b5ccc619e22f5b3215194b1ea2ac005aa6130ab28d300ca8f9e5ff
-    )
-
-    FetchContent_MakeAvailable(Kokkos)
-endif()
-
-# KokkosComm is currently required by the executable.
-# find_package(KokkosComm REQUIRED)
+FetchContent_MakeAvailable(KokkosComm)
 
 # ------------------------------------------------------------------------------
 # Target
 # ------------------------------------------------------------------------------
 
-add_executable(gray_scott_benchmark)
-
-target_sources(
+add_executable(
     gray_scott_benchmark
-    PRIVATE
-        src/main.cpp
+    src/main.cpp
 )
 
 target_link_libraries(
@@ -75,6 +45,20 @@ target_link_libraries(
     PRIVATE
         MPI::MPI_CXX
         Kokkos::kokkos
-        # KokkosComm::KokkosComm
+        KokkosComm::KokkosComm
 )
 
+# KokkosComm generates config.hpp in its binary directory.
+get_target_property(KOKOSCOMM_BINARY_DIR KokkosComm::KokkosComm BINARY_DIR)
+
+target_include_directories(
+    gray_scott_benchmark
+    PRIVATE
+        ${KOKOSCOMM_BINARY_DIR}/src
+)
+
+target_compile_features(
+    gray_scott_benchmark
+    PRIVATE
+        cxx_std_20
+)
