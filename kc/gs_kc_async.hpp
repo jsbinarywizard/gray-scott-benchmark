@@ -12,6 +12,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -46,7 +47,6 @@ public:
     GS_KC_NonBlocking(const GS_KC_NonBlocking&) = delete;
     GS_KC_NonBlocking& operator=(const GS_KC_NonBlocking&) = delete;
 
-private:
     using View = Kokkos::View<real**, Kokkos::LayoutRight>;
     using HaloView = Kokkos::View<real*, Kokkos::LayoutStride>;
 
@@ -132,14 +132,14 @@ private:
             KC_PROC_NULL, KC_PROC_NULL
         };
 
-        std::size_t global_rows = 0;
-        std::size_t global_columns = 0;
+        int global_rows = 0;
+        int global_columns = 0;
 
-        std::size_t local_rows = 0;
-        std::size_t local_columns = 0;
+        int local_rows = 0;
+        int local_columns = 0;
 
-        explicit CartesianDecomposition(std::size_t rows_,
-                                        std::size_t columns_,
+        explicit CartesianDecomposition(int rows_,
+                                        int columns_,
                                         bool strong_scaling) {
             MPI_Comm_size(MPI_COMM_WORLD, &size);
 
@@ -153,21 +153,21 @@ private:
                 global_rows = rows_;
                 global_columns = columns_;
 
-                if (global_rows % static_cast<std::size_t>(dims[0]) != 0 ||
-                    global_columns % static_cast<std::size_t>(dims[1]) != 0) {
+                if (global_rows % static_cast<int>(dims[0]) != 0 ||
+                    global_columns % static_cast<int>(dims[1]) != 0) {
                     throw std::runtime_error(
                         "Global field dimensions must be divisible by the "
                         "MPI Cartesian decomposition for strong scaling.");
                 }
 
-                local_rows = global_rows / static_cast<std::size_t>(dims[0]);
-                local_columns = global_columns / static_cast<std::size_t>(dims[1]);
+                local_rows = global_rows / static_cast<int>(dims[0]);
+                local_columns = global_columns / static_cast<int>(dims[1]);
             } else {
                 local_rows = rows_;
                 local_columns = columns_;
 
-                global_rows = local_rows * static_cast<std::size_t>(dims[0]);
-                global_columns = local_columns * static_cast<std::size_t>(dims[1]);
+                global_rows = local_rows * static_cast<int>(dims[0]);
+                global_columns = local_columns * static_cast<int>(dims[1]);
             }
 
             if (local_rows == 0 || local_columns == 0) {
@@ -252,10 +252,10 @@ private:
         CommBuffers() = default;
 
         explicit CommBuffers(const View& field) {
-            const std::size_t nr = field.extent(0);
-            const std::size_t nc = field.extent(1);
+            const int nr = field.extent(0);
+            const int nc = field.extent(1);
 
-            using Range = Kokkos::pair<std::size_t, std::size_t>;
+            using Range = Kokkos::pair<int, int>;
 
             send[NW] = Kokkos::subview(field, Range(1, 2), 1);
             recv[NW] = Kokkos::subview(field, Range(0, 1), 0);
@@ -328,7 +328,7 @@ private:
     // -------------------------------------------------------------------
     // Initialization. Identical to GS_KokkosComm's / GS_MPI_Blocking's.
     // -------------------------------------------------------------------
-
+public:
     static void initialize_fields(
         const View& u,
         const View& v,
@@ -343,30 +343,30 @@ private:
         Kokkos::deep_copy(u_temp, 1);
         Kokkos::deep_copy(v_temp, 0);
 
-        const std::size_t local_rows = d.local_rows;
-        const std::size_t local_columns = d.local_columns;
+        const int local_rows = d.local_rows;
+        const int local_columns = d.local_columns;
 
-        const std::size_t global_i_center = d.global_rows / 2;
-        const std::size_t global_j_center = d.global_columns / 2;
-        const std::size_t global_i_drop_first = global_i_center - 1;
-        const std::size_t global_i_drop_last = global_i_center + 1;
-        const std::size_t global_j_drop_first = global_j_center - 1;
-        const std::size_t global_j_drop_last = global_j_center + 1;
+        const int global_i_center = d.global_rows / 2;
+        const int global_j_center = d.global_columns / 2;
+        const int global_i_drop_first = global_i_center - 1;
+        const int global_i_drop_last = global_i_center + 1;
+        const int global_j_drop_first = global_j_center - 1;
+        const int global_j_drop_last = global_j_center + 1;
 
-        const std::size_t first_i = static_cast<std::size_t>(d.coords[0]) * local_rows;
-        const std::size_t first_j = static_cast<std::size_t>(d.coords[1]) * local_columns;
+        const int first_i = static_cast<int>(d.coords[0]) * local_rows;
+        const int first_j = static_cast<int>(d.coords[1]) * local_columns;
 
-        const std::size_t last_i = first_i + local_rows;
-        const std::size_t last_j = first_j + local_columns;
+        const int last_i = first_i + local_rows;
+        const int last_j = first_j + local_columns;
 
         // Could be solved better with a single kernel, but this is easier.
-        for (std::size_t gi = global_i_drop_first; gi < global_i_drop_last; ++gi) {
-            for (std::size_t gj = global_j_drop_first; gj < global_j_drop_last; ++gj) {
+        for (int gi = global_i_drop_first; gi < global_i_drop_last; ++gi) {
+            for (int gj = global_j_drop_first; gj < global_j_drop_last; ++gj) {
 
                 if (gi >= first_i && gi < last_i && gj >= first_j && gj < last_j) {
 
-                    const std::size_t local_i = gi - first_i + 1;
-                    const std::size_t local_j = gj - first_j + 1;
+                    const int local_i = gi - first_i + 1;
+                    const int local_j = gj - first_j + 1;
 
                     Kokkos::parallel_for(
                         "add drop", Kokkos::RangePolicy<>(0, 1),
@@ -380,7 +380,7 @@ private:
 
         Kokkos::parallel_for(
             "initialize vertical boundary", Kokkos::RangePolicy<>(0, local_rows + 2),
-            KOKKOS_LAMBDA(const std::size_t i) {
+            KOKKOS_LAMBDA(const int i) {
                 u(i, 0) = 0;
                 u_temp(i, 0) = 0;
 
@@ -390,7 +390,7 @@ private:
 
         Kokkos::parallel_for(
             "initialize horizontal boundary", Kokkos::RangePolicy<>(0, local_columns + 2),
-            KOKKOS_LAMBDA(const std::size_t j) {
+            KOKKOS_LAMBDA(const int j) {
                 u(0, j) = 0;
                 u_temp(0, j) = 0;
 
@@ -413,12 +413,16 @@ private:
     // Cells whose 3x3 stencil does NOT touch the halo, i.e. local index
     // range [2, local_rows-1] x [2, local_columns-1].
     void compute_interior() {
-        const std::size_t local_rows = decomposition.local_rows;
-        const std::size_t local_columns = decomposition.local_columns;
+        const int local_rows = decomposition.local_rows;
+        const int local_columns = decomposition.local_columns;
 
         if (local_rows < 3 || local_columns < 3) return;  // no safe interior
 
-        const auto& coefficients = this->coeffs;
+        const auto coefficients = this->coeffs;
+        auto u_ = u;
+        auto v_ = v;
+        auto u_temp_ = u_temp;
+        auto v_temp_ = v_temp;
 
         Kokkos::parallel_for(
             "compute interior",
@@ -426,7 +430,7 @@ private:
                 {2, 2},
                 {static_cast<std::int64_t>(local_rows), static_cast<std::int64_t>(local_columns)}),
             KOKKOS_LAMBDA(const int i, const int j) {
-                gs_kernel(i, j, u, v, u_temp, v_temp, coefficients);
+                gs_kernel(i, j, u_, v_, u_temp_, v_temp_, coefficients);
             });
     }
 
@@ -435,10 +439,14 @@ private:
     // exactly once via the top/bottom rows; left/right columns exclude
     // those two rows.
     void compute_ring() {
-        const std::size_t local_rows = decomposition.local_rows;
-        const std::size_t local_columns = decomposition.local_columns;
+        const int local_rows = decomposition.local_rows;
+        const int local_columns = decomposition.local_columns;
 
-        const auto& coefficients = this->coeffs;
+        const auto coefficients = this->coeffs;
+        auto u_ = u;
+        auto v_ = v;
+        auto u_temp_ = u_temp;
+        auto v_temp_ = v_temp;
 
         const int nr = static_cast<int>(local_rows);
         const int nc = static_cast<int>(local_columns);
@@ -448,8 +456,8 @@ private:
             "compute ring top/bottom",
             Kokkos::RangePolicy<int>(1, nc + 1),
             KOKKOS_LAMBDA(const int j) {
-                gs_kernel(1, j, u, v, u_temp, v_temp, coefficients);
-                gs_kernel(nr, j, u, v, u_temp, v_temp, coefficients);
+                gs_kernel(1, j, u_, v_, u_temp_, v_temp_, coefficients);
+                gs_kernel(nr, j, u_, v_, u_temp_, v_temp_, coefficients);
             });
 
         // Left column (j = 1) and right column (j = nc), excluding the
@@ -460,8 +468,8 @@ private:
                 "compute ring left/right",
                 Kokkos::RangePolicy<int>(2, nr),
                 KOKKOS_LAMBDA(const int i) {
-                    gs_kernel(i, 1, u, v, u_temp, v_temp, coefficients);
-                    gs_kernel(i, nc, u, v, u_temp, v_temp, coefficients);
+                    gs_kernel(i, 1, u_, v_, u_temp_, v_temp_, coefficients);
+                    gs_kernel(i, nc, u_, v_, u_temp_, v_temp_, coefficients);
                 });
         }
     }
@@ -469,20 +477,17 @@ private:
     // -------------------------------------------------------------------
     // benchmark<real> interface
     // -------------------------------------------------------------------
-
+private:
     void iteration() override {
-        timer post_timer;
+        this->communication_timer.reset();
 
         // Kick off both halo exchanges without blocking.
         ExchangeHandle u_handle = begin_exchange(u_buffers);
         ExchangeHandle v_handle = begin_exchange(v_buffers);
 
-        this->communication_seconds += post_timer.elapsed();
 
         // Overlap: interior compute runs while the halo is in flight.
         compute_interior();
-
-        timer wait_timer;
 
         // Block until the halo has actually arrived. Because recv[dir]
         // aliases the field's own halo cells, there is nothing left to
@@ -490,10 +495,12 @@ private:
         end_exchange(u_handle);
         end_exchange(v_handle);
 
-        this->communication_seconds += wait_timer.elapsed();
+        this->communication_seconds += this->communication_timer.elapsed();
 
         // Finish the cells that depend on the freshly-received halo.
         compute_ring();
+
+        Kokkos::fence();
 
         std::swap(u, u_temp);
         std::swap(v, v_temp);

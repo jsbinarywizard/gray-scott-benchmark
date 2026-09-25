@@ -38,7 +38,7 @@ public:
 
         Kokkos::fence();
 
-        timer total_timer;
+        iteration_timer.reset();
 
         for (int it = 0; it < parameters.benchmark_iters; ++it) {
             iteration();
@@ -46,7 +46,7 @@ public:
 
         Kokkos::fence();
 
-        results.total_time = total_timer.elapsed();
+        results.total_time = iteration_timer.elapsed();
         results.communication_time = communication_seconds;
         results.updates_per_second =
             static_cast<double>(parameters.benchmark_iters) / results.total_time;
@@ -60,6 +60,9 @@ protected:
 
     const Parameters& parameters;
     coefficients<real> coeffs;
+
+    timer iteration_timer;
+    timer communication_timer;
 
     // Derived classes accumulate time spent in communication here so
     // that run() can report it back through results.communication_time.

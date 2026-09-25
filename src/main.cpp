@@ -73,6 +73,12 @@ std::vector<Scaling> scalings_to_run(Scaling scaling) {
 template <typename real>
 bool run_one(const BenchmarkConfig& config, Backend backend, Scaling scal,
              int size, int rank, ResultsWriter& writer) {
+
+    writer.note("Running backend " + std::string(backend_name(backend)) +
+                ", precision " + std::string(precision_name<real>()) +
+                ", scaling " + std::string(scaling_name(scal)) +
+                ", size " + std::to_string(size) + "...");
+
     Parameters parameters;
     parameters.warmup_iters = config.warmup_iters;
     parameters.benchmark_iters = config.benchmark_iters;
@@ -163,7 +169,7 @@ int main(int argc, char* argv[]) {
             MPI_Bcast(&exit_code, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
             if (exit_code != 0) {
-                exit;
+                return exit_code;
             }
 
             const std::vector<Scaling> scalings = scalings_to_run(config.scaling);
@@ -171,11 +177,6 @@ int main(int argc, char* argv[]) {
             for (int size : config.sizes) {
                 for (Scaling scaling : scalings) {
                     for (Backend backend : config.backends) {
-
-                        writer.note("Running backend " + std::string(backend_name(backend)) +
-                                     ", precision " + std::string(precision_name<float>()) +
-                                     ", scaling " + std::string(scaling_name(scaling)) +
-                                     ", size " + std::to_string(size) + "...");
 
                         if (config.precision == Precision::SINGLE ||
                             config.precision == Precision::BOTH) {
