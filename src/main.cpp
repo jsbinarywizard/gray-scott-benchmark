@@ -86,6 +86,7 @@ bool run_one(const BenchmarkConfig& config, Backend backend, Scaling scal,
     parameters.columns = size;
     parameters.measure_cell_updates = config.measure_cell_updates;
     parameters.measure_comm_bandwidth = config.measure_comm_bandwidth;
+    parameters.measure_reduction = config.measure_reduction;
     parameters.strong_scaling = (scal == Scaling::STRONG);
 
     const bool strong_scaling = parameters.strong_scaling;

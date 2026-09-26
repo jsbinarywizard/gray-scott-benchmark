@@ -454,25 +454,7 @@ public:
     // Cells whose 3x3 stencil does NOT touch the halo, i.e. local index
     // range [2, local_rows-1] x [2, local_columns-1].
     void compute_interior() {
-        const int local_rows = decomposition.local_rows;
-        const int local_columns = decomposition.local_columns;
-
-        if (local_rows < 3 || local_columns < 3) return;  // no safe interior
-
-        const auto coefficients = this->coeffs;
-        const auto u_ = u;
-        const auto v_ = v;
-        auto u_temp_ = u_temp;
-        auto v_temp_ = v_temp;
-
-        Kokkos::parallel_for(
-            "compute interior",
-            Kokkos::MDRangePolicy<Kokkos::Rank<2>>(
-                {2, 2},
-                {static_cast<int>(local_rows - 1), static_cast<int>(local_columns - 1)}),
-            KOKKOS_LAMBDA(const int i, const int j) {
-                gs_kernel(i, j, u_, v_, u_temp_, v_temp_, coefficients);
-            });
+        gs_compute_interior(u, v, u_temp, v_temp, this->coeffs);
     }
 
     // The one-cell-wide ring of interior cells adjacent to the halo,
@@ -480,40 +462,7 @@ public:
     // exactly once via the top/bottom rows; left/right columns exclude
     // those two rows.
     void compute_ring() {
-        const int local_rows = decomposition.local_rows;
-        const int local_columns = decomposition.local_columns;
-
-        const auto coefficients = this->coeffs;
-
-        const int nr = static_cast<int>(local_rows);
-        const int nc = static_cast<int>(local_columns);
-
-        const auto u_ = u;
-        const auto v_ = v;
-        const auto u_temp_ = u_temp;
-        const auto v_temp_ = v_temp;
-
-        // Top row (i = 1) and bottom row (i = nr), full width incl. corners.
-        Kokkos::parallel_for(
-            "compute ring top/bottom",
-            Kokkos::RangePolicy<int>(1, nc + 1),
-            KOKKOS_LAMBDA(const int j) {
-                gs_kernel(1, j, u_, v_, u_temp_, v_temp_, coefficients);
-                gs_kernel(nr, j, u_, v_, u_temp_, v_temp_, coefficients);
-            });
-
-        // Left column (j = 1) and right column (j = nc), excluding the
-        // corners already done above, i.e. i in [2, nr-1]. Only
-        // meaningful if nr > 2.
-        if (nr > 2) {
-            Kokkos::parallel_for(
-                "compute ring left/right",
-                Kokkos::RangePolicy<int>(2, nr),
-                KOKKOS_LAMBDA(const int i) {
-                    gs_kernel(i, 1, u_, v_, u_temp_, v_temp_, coefficients);
-                    gs_kernel(i, nc, u_, v_, u_temp_, v_temp_, coefficients);
-                });
-        }
+        gs_compute_ring(u, v, u_temp, v_temp, this->coeffs);
     }
 
     // -------------------------------------------------------------------
@@ -547,6 +496,24 @@ private:
 
         std::swap(u, u_temp);
         std::swap(v, v_temp);
+
+        if (this->parameters.measure_reduction) {
+            std::array<MPI_Request, 2> requests;
+
+            const real local_checksum_u = local_reduction(u);
+            real global_checksum_u = 0;
+            MPI_Iallreduce(
+                &local_checksum_u, &global_checksum_u, 1, mpi_real_type(),
+                MPI_SUM, decomposition.comm, &requests[0]);
+
+            const real local_checksum_v = local_reduction(v);
+            real global_checksum_v = 0;
+            MPI_Iallreduce(
+                &local_checksum_v, &global_checksum_v, 1, mpi_real_type(),
+                MPI_SUM, decomposition.comm, &requests[1]);
+
+            MPI_Waitall(2, requests.data(), MPI_STATUSES_IGNORE);
+        }
     }
 
     // -------------------------------------------------------------------

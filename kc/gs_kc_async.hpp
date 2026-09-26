@@ -36,7 +36,11 @@ public:
           u_temp("u_temp", decomposition.local_rows + 2, decomposition.local_columns + 2),
           v_temp("v_temp", decomposition.local_rows + 2, decomposition.local_columns + 2),
           u_buffers(u),
-          v_buffers(v) {
+          v_buffers(v),
+          u_reduction("u_reduction", 1),
+          v_reduction("v_reduction", 1),
+          u_global_reduction("u_global_reduction", 1),
+          v_global_reduction("v_global_reduction", 1) {
 
         initialize_fields(u, v, u_temp, v_temp, decomposition, parameters);
 
@@ -413,25 +417,7 @@ public:
     // Cells whose 3x3 stencil does NOT touch the halo, i.e. local index
     // range [2, local_rows-1] x [2, local_columns-1].
     void compute_interior() {
-        const int local_rows = decomposition.local_rows;
-        const int local_columns = decomposition.local_columns;
-
-        if (local_rows < 3 || local_columns < 3) return;  // no safe interior
-
-        const auto coefficients = this->coeffs;
-        auto u_ = u;
-        auto v_ = v;
-        auto u_temp_ = u_temp;
-        auto v_temp_ = v_temp;
-
-        Kokkos::parallel_for(
-            "compute interior",
-            Kokkos::MDRangePolicy<Kokkos::Rank<2>>(
-                {2, 2},
-                {static_cast<std::int64_t>(local_rows), static_cast<std::int64_t>(local_columns)}),
-            KOKKOS_LAMBDA(const int i, const int j) {
-                gs_kernel(i, j, u_, v_, u_temp_, v_temp_, coefficients);
-            });
+        gs_compute_interior(u, v, u_temp, v_temp, this->coeffs);
     }
 
     // The one-cell-wide ring of interior cells adjacent to the halo, only
@@ -439,39 +425,7 @@ public:
     // exactly once via the top/bottom rows; left/right columns exclude
     // those two rows.
     void compute_ring() {
-        const int local_rows = decomposition.local_rows;
-        const int local_columns = decomposition.local_columns;
-
-        const auto coefficients = this->coeffs;
-        auto u_ = u;
-        auto v_ = v;
-        auto u_temp_ = u_temp;
-        auto v_temp_ = v_temp;
-
-        const int nr = static_cast<int>(local_rows);
-        const int nc = static_cast<int>(local_columns);
-
-        // Top row (i = 1) and bottom row (i = nr), full width incl. corners.
-        Kokkos::parallel_for(
-            "compute ring top/bottom",
-            Kokkos::RangePolicy<int>(1, nc + 1),
-            KOKKOS_LAMBDA(const int j) {
-                gs_kernel(1, j, u_, v_, u_temp_, v_temp_, coefficients);
-                gs_kernel(nr, j, u_, v_, u_temp_, v_temp_, coefficients);
-            });
-
-        // Left column (j = 1) and right column (j = nc), excluding the
-        // corners already done above, i.e. i in [2, nr-1]. Only
-        // meaningful if nr > 2.
-        if (nr > 2) {
-            Kokkos::parallel_for(
-                "compute ring left/right",
-                Kokkos::RangePolicy<int>(2, nr),
-                KOKKOS_LAMBDA(const int i) {
-                    gs_kernel(i, 1, u_, v_, u_temp_, v_temp_, coefficients);
-                    gs_kernel(i, nc, u_, v_, u_temp_, v_temp_, coefficients);
-                });
-        }
+        gs_compute_ring(u, v, u_temp, v_temp, this->coeffs);
     }
 
     // -------------------------------------------------------------------
@@ -510,6 +464,25 @@ private:
         // begin_exchange().
         u_buffers = CommBuffers(u);
         v_buffers = CommBuffers(v);
+
+        if (this->parameters.measure_reduction) {
+            Kokkos::deep_copy(u_reduction, local_reduction(u));
+            Kokkos::deep_copy(v_reduction, local_reduction(v));
+
+            std::vector<KokkosComm::Request<CommSpace>> requests;
+            requests.reserve(2);
+            requests.push_back(KokkosComm::Experimental::allreduce(
+                *decomposition.comm,
+                u_reduction,
+                u_global_reduction,
+                KokkosComm::Sum{}));
+            requests.push_back(KokkosComm::Experimental::allreduce(
+                *decomposition.comm,
+                v_reduction,
+                v_global_reduction,
+                KokkosComm::Sum{}));
+            KokkosComm::wait_all(requests);
+        }
     }
 
     // -------------------------------------------------------------------
@@ -526,4 +499,9 @@ private:
 
     CommBuffers u_buffers;
     CommBuffers v_buffers;
+
+    Kokkos::View<real*> u_reduction;
+    Kokkos::View<real*> v_reduction;
+    Kokkos::View<real*> u_global_reduction;
+    Kokkos::View<real*> v_global_reduction;
 };

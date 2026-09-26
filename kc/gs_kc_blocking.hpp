@@ -37,7 +37,11 @@ public:
           u_temp("u_temp", decomposition.local_rows + 2, decomposition.local_columns + 2),
           v_temp("v_temp", decomposition.local_rows + 2, decomposition.local_columns + 2),
           u_buffers(u),
-          v_buffers(v) {
+          v_buffers(v),
+          u_reduction("u_reduction", 1),
+          v_reduction("v_reduction", 1),
+          u_global_reduction("u_global_reduction", 1),
+          v_global_reduction("v_global_reduction", 1) {
 
         initialize_fields(u, v, u_temp, v_temp, decomposition, parameters);
 
@@ -423,21 +427,7 @@ public:
     // -------------------------------------------------------------------
 
     void compute() {
-        const int nr = u.extent(0);
-        const int nc = u.extent(1);
-
-        const auto coefficients = this->coeffs;
-        auto u_ = u;
-        auto v_ = v;
-        auto u_temp_ = u_temp;
-        auto v_temp_ = v_temp;
-
-        Kokkos::parallel_for(
-            "compute",
-            Kokkos::MDRangePolicy<Kokkos::Rank<2>>({1, 1}, {nr - 1, nc - 1}),
-            KOKKOS_LAMBDA(const int i, const int j) {
-                gs_kernel(i, j, u_, v_, u_temp_, v_temp_, coefficients);
-            });
+        gs_compute(u, v, u_temp, v_temp, this->coeffs);
     }
 
 private:
@@ -466,6 +456,25 @@ private:
         // exchange().
         u_buffers = CommBuffers(u);
         v_buffers = CommBuffers(v);
+
+        if (this->parameters.measure_reduction) {
+            Kokkos::deep_copy(u_reduction, local_reduction(u));
+            Kokkos::deep_copy(v_reduction, local_reduction(v));
+
+            auto u_request = KokkosComm::Experimental::allreduce(
+                *decomposition.comm,
+                u_reduction,
+                u_global_reduction,
+                KokkosComm::Sum{});
+            KokkosComm::wait(u_request);
+
+            auto v_request = KokkosComm::Experimental::allreduce(
+                *decomposition.comm,
+                v_reduction,
+                v_global_reduction,
+                KokkosComm::Sum{});
+            KokkosComm::wait(v_request);
+        }
     }
 
     // -------------------------------------------------------------------
@@ -482,4 +491,9 @@ private:
 
     CommBuffers u_buffers;
     CommBuffers v_buffers;
+
+    Kokkos::View<real*> u_reduction;
+    Kokkos::View<real*> v_reduction;
+    Kokkos::View<real*> u_global_reduction;
+    Kokkos::View<real*> v_global_reduction;
 };

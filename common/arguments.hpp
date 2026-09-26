@@ -87,6 +87,8 @@ struct BenchmarkConfig {
     bool measure_cell_updates = true;
     bool measure_comm_bandwidth = true;
 
+    bool measure_reduction = false;
+
     std::vector<int> sizes = {
         32, 64, 128, 256, 512, 1024, 2048, 4096
     };
@@ -633,6 +635,15 @@ private:
             return true;
         }
 
+        if (std::strcmp(arg, "--reduction") == 0) {
+            config.measure_reduction = true;
+            return true;
+        }
+
+        if (std::strcmp(arg, "--no-reduction") == 0) {
+            config.measure_reduction = false;
+            return true;
+        }
         // --------------------------------------------------------------------
         // Not a standard argument.
         // --------------------------------------------------------------------
@@ -729,7 +740,14 @@ public:
             << "        (default: enabled)\n\n"
 
             << "  --no-comm-bandwidth\n"
-            << "        Disable communication-bandwidth measurements.\n\n";
+            << "        Disable communication-bandwidth measurements.\n\n"
+
+            << "  --reduction\n"
+            << "        Enable per-iteration global field reductions.\n"
+            << "        (default: disabled)\n\n"
+
+            << "  --no-reduction\n"
+            << "        Disable per-iteration global field reductions.\n\n";
 
         // --------------------------------------------------------------------
         // Resource limits

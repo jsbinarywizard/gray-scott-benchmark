@@ -9,6 +9,7 @@ struct Parameters {
 
     bool measure_cell_updates = true;
     bool measure_comm_bandwidth = true;
+    bool measure_reduction = false;
 
     bool strong_scaling = true;
 };

@@ -5,14 +5,17 @@
 #include "coefficients.hpp"
 
 template <typename real>
+using gs_view = Kokkos::View<real**, Kokkos::LayoutRight>;
+
+template <typename real>
 KOKKOS_INLINE_FUNCTION
 void gs_kernel(
     const int i,
     const int j,
-    const Kokkos::View<real**, Kokkos::LayoutRight> u,
-    const Kokkos::View<real**, Kokkos::LayoutRight> v,
-    const Kokkos::View<real**, Kokkos::LayoutRight> u_out,
-    const Kokkos::View<real**, Kokkos::LayoutRight> v_out,
+    const gs_view<real> u,
+    const gs_view<real> v,
+    const gs_view<real> u_out,
+    const gs_view<real> v_out,
     const coefficients<real>& c)
 {
     const real u_ij = u(i, j);
@@ -46,4 +49,110 @@ void gs_kernel(
 
     u_out(i, j) = u_ij + dt * du;
     v_out(i, j) = v_ij + dt * dv;
+}
+
+template <typename real>
+void gs_compute(
+    const gs_view<real>& u,
+    const gs_view<real>& v,
+    const gs_view<real>& u_out,
+    const gs_view<real>& v_out,
+    const coefficients<real>& c)
+{
+    const int rows = static_cast<int>(u.extent(0));
+    const int columns = static_cast<int>(u.extent(1));
+    const auto u_ = u;
+    const auto v_ = v;
+    const auto u_out_ = u_out;
+    const auto v_out_ = v_out;
+    const auto c_ = c;
+
+    Kokkos::parallel_for(
+        "compute",
+        Kokkos::MDRangePolicy<Kokkos::Rank<2>>(
+            {1, 1}, {rows - 1, columns - 1}),
+        KOKKOS_LAMBDA(const int i, const int j) {
+            gs_kernel(i, j, u_, v_, u_out_, v_out_, c_);
+        });
+}
+
+template <typename real>
+void gs_compute_interior(
+    const gs_view<real>& u,
+    const gs_view<real>& v,
+    const gs_view<real>& u_out,
+    const gs_view<real>& v_out,
+    const coefficients<real>& c)
+{
+    const int rows = static_cast<int>(u.extent(0)) - 2;
+    const int columns = static_cast<int>(u.extent(1)) - 2;
+    if (rows < 3 || columns < 3) return;
+
+    const auto u_ = u;
+    const auto v_ = v;
+    const auto u_out_ = u_out;
+    const auto v_out_ = v_out;
+    const auto c_ = c;
+
+    Kokkos::parallel_for(
+        "compute interior",
+        Kokkos::MDRangePolicy<Kokkos::Rank<2>>(
+            {2, 2}, {rows, columns}),
+        KOKKOS_LAMBDA(const int i, const int j) {
+            gs_kernel(i, j, u_, v_, u_out_, v_out_, c_);
+        });
+}
+
+template <typename real>
+void gs_compute_ring(
+    const gs_view<real>& u,
+    const gs_view<real>& v,
+    const gs_view<real>& u_out,
+    const gs_view<real>& v_out,
+    const coefficients<real>& c)
+{
+    const int rows = static_cast<int>(u.extent(0)) - 2;
+    const int columns = static_cast<int>(u.extent(1)) - 2;
+    const auto u_ = u;
+    const auto v_ = v;
+    const auto u_out_ = u_out;
+    const auto v_out_ = v_out;
+    const auto c_ = c;
+
+    Kokkos::parallel_for(
+        "compute ring top/bottom",
+        Kokkos::RangePolicy<int>(1, columns + 1),
+        KOKKOS_LAMBDA(const int j) {
+            gs_kernel(1, j, u_, v_, u_out_, v_out_, c_);
+            gs_kernel(rows, j, u_, v_, u_out_, v_out_, c_);
+        });
+
+    if (rows > 2) {
+        Kokkos::parallel_for(
+            "compute ring left/right",
+            Kokkos::RangePolicy<int>(2, rows),
+            KOKKOS_LAMBDA(const int i) {
+                gs_kernel(i, 1, u_, v_, u_out_, v_out_, c_);
+                gs_kernel(i, columns, u_, v_, u_out_, v_out_, c_);
+            });
+    }
+}
+
+template <typename real>
+real local_reduction(const gs_view<real> in)
+{
+    const int rows = static_cast<int>(in.extent(0));
+    const int columns = static_cast<int>(in.extent(1));
+    real checksum = 0;
+
+    Kokkos::parallel_reduce(
+        "checksum",
+        Kokkos::MDRangePolicy<Kokkos::Rank<2>>(
+            {1, 1}, {rows - 1, columns - 1}),
+        KOKKOS_LAMBDA(const int i, const int j, real& local_sum) {
+            local_sum += in(i, j);
+        },
+        checksum);
+
+    return checksum;
 }

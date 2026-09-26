@@ -380,23 +380,7 @@ public:
     }
 
     void compute() {
-        const std::size_t nr = u.extent(0);
-        const std::size_t nc = u.extent(1);
-
-        const View u_      = this->u;
-        const View v_      = this->v;
-        View u_temp_ = this->u_temp;
-        View v_temp_ = this->v_temp;
-        auto coeffs_ = this->coeffs;
-
-        Kokkos::parallel_for(
-            "compute",
-            Kokkos::MDRangePolicy<
-                Kokkos::Rank<2, Kokkos::Iterate::Default, Kokkos::Iterate::Right>
-            >({1, 1}, {nr - 1, nc - 1}),
-            KOKKOS_LAMBDA(const int i, const int j) {
-                gs_kernel(i, j, u_, v_, u_temp_, v_temp_, coeffs_);
-            });
+        gs_compute(u, v, u_temp, v_temp, this->coeffs);
     }
 
 private:
@@ -415,6 +399,12 @@ private:
 
         std::swap(u, u_temp);
         std::swap(v, v_temp);
+
+        if (this->parameters.measure_reduction) {
+            std::array<real, 2> local_sums = {local_reduction(u), local_reduction(v)};
+            std::array<real, 2> global_sums = {0, 0};
+            MPI_Allreduce(local_sums.data(), global_sums.data(), 2, mpi_real_type(), MPI_SUM, decomposition.comm);
+        }
     }
 
     CartesianDecomposition decomposition;
