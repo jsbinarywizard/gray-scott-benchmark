@@ -37,6 +37,7 @@ protected:
                                           KokkosComm::MpiSpace>;
 
     using CommHandle = KokkosComm::Communicator<CommSpace, ExecSpace>;
+    using RequestType = KokkosComm::Request<CommSpace>;
 
     explicit GS_KC(const Parameters& parameters, const Decomposition& decomposition)
         : Base(parameters, decomposition),
@@ -86,6 +87,7 @@ class GS_KC_Blocking : public GS_KC<real, CCL> {
     // unqualified lookup, so pull in what's needed explicitly.
     using Base = GS_KC<real, CCL>;
     using View = typename Base::View;
+    using RequestType = typename Base::RequestType;
 
 public:
     explicit GS_KC_Blocking(const Parameters& parameters, const Decomposition& decomposition)
@@ -93,8 +95,8 @@ public:
 
 private:
     void exchange(View& b) {
-        std::vector<KokkosComm::Request<>> recv_requests{};
-        std::vector<KokkosComm::Request<>> send_requests{};
+        std::vector<RequestType> recv_requests{};
+        std::vector<RequestType> send_requests{};
         recv_requests.reserve(n_directions);
         send_requests.reserve(n_directions);
 
@@ -142,9 +144,10 @@ template <typename real, bool CCL = false>
 class GS_KC_NonBlocking : public GS_KC<real, CCL> {
     using Base = GS_KC<real, CCL>;
     using View = typename Base::View;
+    using RequestType = typename Base::RequestType;
 
     struct ExchangeHandle {
-        std::vector<KokkosComm::Request<>> requests;
+        std::vector<RequestType> requests;
     };
 
     ExchangeHandle begin_exchange(View& b) {
