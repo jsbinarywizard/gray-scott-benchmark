@@ -4,61 +4,127 @@
 
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cctype>
+#include <cmath>
 #include <cstring>
-#include <functional>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
-// ============================================================================
-// Benchmark parameter enums
-// ============================================================================
 
+// -----------------------------------------------------------------------------
+// Precision
+// -----------------------------------------------------------------------------
+
+// Currently only single and double precision are supported.
 enum class Precision {
     SINGLE,
-    DOUBLE,
-    BOTH
+    DOUBLE
 };
 
-enum class Scaling {
-    STRONG,
-    WEAK,
-    BOTH
-};
-
-// One entry per benchmark class (GS_MPI_Blocking, GS_KokkosComm, ...). Add
-// new backends here and in backend_name()/all_backends()/the --backend
-// parsing below; main.cpp's dispatch (make_benchmark()) is the only other
-// place that needs to know about a new benchmark class.
-enum class Backend {
-    MPI_BLOCKING,
-    MPI_NONBLOCKING,
-    KC_BLOCKING,
-    KC_NONBLOCKING
-};
-
-inline const char* backend_name(Backend backend) {
-    switch (backend) {
-        case Backend::MPI_BLOCKING: return "mpi_blocking";
-        case Backend::MPI_NONBLOCKING: return "mpi_nonblocking";
-        case Backend::KC_BLOCKING:   return "kc_blocking";
-        case Backend::KC_NONBLOCKING: return "kc_nonblocking";
+inline const char* precision_name(Precision precision) {
+    switch (precision) {
+        case Precision::SINGLE: return "single";
+        case Precision::DOUBLE: return "double";
     }
     return "unknown";
 }
 
-// Every implemented backend, in the order "--backend all" runs them.
+// Every implemented precision, in the order in which "--precision all"
+// runs them. To add a new precision (e.g. INT): extend the enum,
+// precision_name(), this list, and BenchmarkParser::parse_precisions().
+inline const std::vector<Precision>& all_precisions() {
+    static const std::vector<Precision> precisions = {
+        Precision::SINGLE,
+        Precision::DOUBLE
+    };
+    return precisions;
+}
+
+
+// -----------------------------------------------------------------------------
+// Scaling
+// -----------------------------------------------------------------------------
+
+enum class Scaling {
+    STRONG,
+    WEAK
+};
+
+inline const char* scaling_name(Scaling scaling) {
+    switch (scaling) {
+        case Scaling::STRONG: return "strong";
+        case Scaling::WEAK:   return "weak";
+    }
+    return "unknown";
+}
+
+
+// -----------------------------------------------------------------------------
+// Backend
+// -----------------------------------------------------------------------------
+
+// One entry per benchmark backend.
+// Add new backends here and in backend_name()/all_backends().
+// BenchmarkParser::parse_backends() and the benchmark dispatch are the other
+// places that need to be updated when adding a new backend.
+enum class Backend {
+    MPI_BLOCKING,
+    MPI_NONBLOCKING,
+    KC_MPI_BLOCKING,
+    KC_MPI_NONBLOCKING,
+    KC_CCL_BLOCKING,
+    KC_CCL_NONBLOCKING
+};
+
+inline const char* backend_name(Backend backend) {
+    switch (backend) {
+        case Backend::MPI_BLOCKING:    return "mpi_blocking";
+        case Backend::MPI_NONBLOCKING: return "mpi_nonblocking";
+        case Backend::KC_MPI_BLOCKING:     return "kc_mpi_blocking";
+        case Backend::KC_MPI_NONBLOCKING:  return "kc_mpi_nonblocking";
+        case Backend::KC_CCL_BLOCKING:     return "kc_ccl_blocking";
+        case Backend::KC_CCL_NONBLOCKING:  return "kc_ccl_nonblocking";
+    }
+    return "unknown";
+}
+
+// Every implemented backend, in the order in which "--backend all" runs them.
 inline const std::vector<Backend>& all_backends() {
     static const std::vector<Backend> backends = {
         Backend::MPI_BLOCKING,
         Backend::MPI_NONBLOCKING,
-        Backend::KC_BLOCKING,
-        Backend::KC_NONBLOCKING
+        Backend::KC_MPI_BLOCKING,
+        Backend::KC_MPI_NONBLOCKING,
+        Backend::KC_CCL_BLOCKING,
+        Backend::KC_CCL_NONBLOCKING
     };
     return backends;
 }
+
+inline const std::vector<Backend>& blocking_backends() {
+    static const std::vector<Backend> backends = {
+        Backend::MPI_BLOCKING,
+        Backend::KC_MPI_BLOCKING,
+        Backend::KC_CCL_BLOCKING
+    };
+    return backends;
+}
+
+inline const std::vector<Backend>& nonblocking_backends() {
+    static const std::vector<Backend> backends = {
+        Backend::MPI_NONBLOCKING,
+        Backend::KC_MPI_NONBLOCKING,
+        Backend::KC_CCL_NONBLOCKING
+    };
+    return backends;
+}
+
 
 // ============================================================================
 // Benchmark configuration
@@ -67,10 +133,10 @@ inline const std::vector<Backend>& all_backends() {
 struct BenchmarkConfig {
 
     // ------------------------------------------------------------------------
-    // Iteration control
+    // Iteration control (time based)
     // ------------------------------------------------------------------------
-    int warmup_iters = 500;
-    int benchmark_iters = 5000;
+    double warmup_time    = 1.0; // seconds
+    double benchmark_time = 5.0; // seconds
 
     // ------------------------------------------------------------------------
     // Resource limits
@@ -80,18 +146,20 @@ struct BenchmarkConfig {
     // ------------------------------------------------------------------------
     // Benchmark configuration
     // ------------------------------------------------------------------------
-    Precision precision = Precision::BOTH;
-    Scaling scaling = Scaling::STRONG;
-    std::vector<Backend> backends = {Backend::MPI_BLOCKING};
+    std::vector<Precision> precision = {Precision::DOUBLE};
+    std::vector<Scaling>   scaling   = {Scaling::STRONG};
+    std::vector<Backend>   backends  = {Backend::MPI_BLOCKING};
 
-    bool measure_cell_updates = true;
-    bool measure_comm_bandwidth = true;
+    bool measure_cell_updates   = true; // Deleted the option to disable cell-update measurements, as it is not used in the benchmark.
 
-    bool measure_reduction = false;
+    // Strong scaling: global problem sizes. Weak scaling: per-rank sizes.
+    std::vector<int> strong_sizes = {32, 64, 128, 256, 512, 1024, 2048, 4096};
+    std::vector<int> weak_sizes   = {32, 64, 128, 256, 512, 1024, 2048};
 
-    std::vector<int> sizes = {
-        32, 64, 128, 256, 512, 1024, 2048, 4096
-    };
+    // ------------------------------------------------------------------------
+    // MPI Cartesian decomposition
+    // ------------------------------------------------------------------------
+    std::array<bool, 2> periodic = {false, false}; // {dim 0 (x), dim 1 (y)}
 
     // ------------------------------------------------------------------------
     // Output
@@ -110,36 +178,20 @@ private:
 
     std::string benchmark_name;
 
-    // ------------------------------------------------------------------------
-    // Check whether an argument matches one of the provided flags.
-    // ------------------------------------------------------------------------
-    static bool matches_flag(
-        const char* arg,
-        const std::vector<std::string>& flags)
-    {
-        for (const auto& flag : flags) {
-            if (std::strcmp(arg, flag.c_str()) == 0) {
-                return true;
-            }
-        }
-
-        return false;
-    }
+    enum class ArgResult { OK, HELP, NOT_STANDARD };
 
     // ------------------------------------------------------------------------
-    // Trim leading and trailing whitespace.
+    // String helpers
     // ------------------------------------------------------------------------
     static std::string trim_copy(const std::string& input)
     {
         std::size_t start = 0;
-
         while (start < input.size() &&
                std::isspace(static_cast<unsigned char>(input[start]))) {
             ++start;
         }
 
         std::size_t end = input.size();
-
         while (end > start &&
                std::isspace(static_cast<unsigned char>(input[end - 1]))) {
             --end;
@@ -148,26 +200,56 @@ private:
         return input.substr(start, end - start);
     }
 
-    // ------------------------------------------------------------------------
-    // Lowercase a string (ASCII).
-    // ------------------------------------------------------------------------
     static std::string lowercase_copy(const std::string& input)
     {
         std::string result = input;
-
         for (char& c : result) {
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         }
-
         return result;
     }
 
+    // Trim + lowercase + treat '-' and '_' as equivalent.
+    static std::string normalize_token(const std::string& input)
+    {
+        std::string result = lowercase_copy(trim_copy(input));
+        std::replace(result.begin(), result.end(), '-', '_');
+        return result;
+    }
+
+    // Split on ',' (empty tokens are preserved so callers can reject them).
+    static std::vector<std::string> split_commas(const std::string& input)
+    {
+        std::vector<std::string> tokens;
+        std::size_t begin = 0;
+
+        while (true) {
+            const std::size_t comma = input.find(',', begin);
+            tokens.push_back(input.substr(
+                begin,
+                comma == std::string::npos ? std::string::npos : comma - begin));
+
+            if (comma == std::string::npos) {
+                break;
+            }
+            begin = comma + 1;
+        }
+
+        return tokens;
+    }
+
+    template <typename T>
+    static void append_unique(std::vector<T>& list, const T& value)
+    {
+        if (std::find(list.begin(), list.end(), value) == list.end()) {
+            list.push_back(value);
+        }
+    }
+
     // ------------------------------------------------------------------------
-    // Parse an integer argument.
+    // Number parsing (whole string must be consumed)
     // ------------------------------------------------------------------------
-    static bool parse_int(
-        const char* value,
-        int& result)
+    static bool parse_int(const char* value, int& result)
     {
         if (value == nullptr || *value == '\0') {
             return false;
@@ -176,7 +258,6 @@ private:
         try {
             std::size_t consumed = 0;
             const std::string str(value);
-
             const int parsed = std::stoi(str, &consumed);
 
             if (consumed != str.size()) {
@@ -191,12 +272,7 @@ private:
         }
     }
 
-    // ------------------------------------------------------------------------
-    // Parse a floating-point argument.
-    // ------------------------------------------------------------------------
-    static bool parse_double(
-        const char* value,
-        double& result)
+    static bool parse_double(const char* value, double& result)
     {
         if (value == nullptr || *value == '\0') {
             return false;
@@ -205,10 +281,9 @@ private:
         try {
             std::size_t consumed = 0;
             const std::string str(value);
-
             const double parsed = std::stod(str, &consumed);
 
-            if (consumed != str.size()) {
+            if (consumed != str.size() || !std::isfinite(parsed)) {
                 return false;
             }
 
@@ -222,10 +297,9 @@ private:
 
     // ------------------------------------------------------------------------
     // Parse a comma-separated list of backend names, or "all".
+    // Accepts '-' or '_' as separator, e.g. mpi-blocking / mpi_blocking.
     // ------------------------------------------------------------------------
-    static bool parse_backends(
-        const char* value,
-        std::vector<Backend>& backends)
+    static bool parse_backends(const char* value, std::vector<Backend>& backends)
     {
         if (value == nullptr || *value == '\0') {
             return false;
@@ -233,575 +307,459 @@ private:
 
         const std::string input(value);
 
-        if (lowercase_copy(trim_copy(input)) == "all") {
+        const auto normalized = normalize_token(input);
+        if (normalized == "all") {
             backends = all_backends();
             return true;
+        }else if (normalized == "blocking") {
+            backends = blocking_backends();
+            return true;
+        }else if (normalized == "nonblocking") {
+            backends = nonblocking_backends();
+            return true;
         }
+        
 
-        std::vector<Backend> parsed_backends;
+        std::vector<Backend> parsed;
 
-        std::size_t begin = 0;
+        for (const auto& raw : split_commas(input)) {
+            const std::string token = normalize_token(raw);
 
-        while (begin <= input.size()) {
-            const std::size_t comma = input.find(',', begin);
-
-            const std::string token =
-                lowercase_copy(trim_copy(input.substr(
-                    begin,
-                    comma == std::string::npos
-                        ? std::string::npos
-                        : comma - begin)));
-
-            if (token.empty()) {
-                return false;
+            if (token == "mpi_blocking") {
+                append_unique(parsed, Backend::MPI_BLOCKING);
             }
-
-            if (token == "mpi-blocking" || token == "mpi_blocking") {
-                parsed_backends.push_back(Backend::MPI_BLOCKING);
+            else if (token == "mpi_nonblocking") {
+                append_unique(parsed, Backend::MPI_NONBLOCKING);
             }
-            else if (token == "kc-blocking" || token == "kc_blocking") {
-                parsed_backends.push_back(Backend::KC_BLOCKING);
+            else if (token == "kc_blocking") {
+                append_unique(parsed, Backend::KC_MPI_BLOCKING);
+            }
+            else if (token == "kc_nonblocking") {
+                append_unique(parsed, Backend::KC_MPI_NONBLOCKING);
+            }
+            else if (token == "kc_ccl_blocking") {
+                append_unique(parsed, Backend::KC_CCL_BLOCKING);
+            }
+            else if (token == "kc_ccl_nonblocking") {
+                append_unique(parsed, Backend::KC_CCL_NONBLOCKING);
             }
             else {
-                return false;
+                return false; // unknown or empty token
             }
-
-            if (comma == std::string::npos) {
-                break;
-            }
-
-            begin = comma + 1;
         }
 
-        if (parsed_backends.empty()) {
-            return false;
-        }
-
-        backends = std::move(parsed_backends);
-        return true;
+        backends = std::move(parsed);
+        return !backends.empty();
     }
 
     // ------------------------------------------------------------------------
-    // Parse a comma-separated list of positive integers.
+    // Parse a comma-separated list of precisions, or "all".
+    // "both" is kept as a fixed alias for "single,double" (it does NOT grow
+    // when more precisions are added; use "all" for that).
     // ------------------------------------------------------------------------
-    static bool parse_sizes(
-        const char* value,
-        std::vector<int>& sizes)
+    static bool parse_precisions(const char* value, std::vector<Precision>& out)
     {
         if (value == nullptr || *value == '\0') {
             return false;
         }
 
-        std::vector<int> parsed_sizes;
-        std::string input(value);
+        const std::string input(value);
 
-        std::size_t begin = 0;
-
-        while (begin <= input.size()) {
-            const std::size_t comma = input.find(',', begin);
-
-            const std::string token =
-                trim_copy(input.substr(
-                    begin,
-                    comma == std::string::npos
-                        ? std::string::npos
-                        : comma - begin));
-
-            if (token.empty()) {
-                return false;
-            }
-
-            int size = 0;
-
-            if (!parse_int(token.c_str(), size) || size <= 0) {
-                return false;
-            }
-
-            parsed_sizes.push_back(size);
-
-            if (comma == std::string::npos) {
-                break;
-            }
-
-            begin = comma + 1;
+        if (normalize_token(input) == "all") {
+            out = all_precisions();
+            return true;
         }
 
-        if (parsed_sizes.empty()) {
+        std::vector<Precision> parsed;
+
+        for (const auto& raw : split_commas(input)) {
+            const std::string token = normalize_token(raw);
+
+            if (token == "single") {
+                append_unique(parsed, Precision::SINGLE);
+            }
+            else if (token == "double") {
+                append_unique(parsed, Precision::DOUBLE);
+            }
+            else if (token == "both") {
+                append_unique(parsed, Precision::SINGLE);
+                append_unique(parsed, Precision::DOUBLE);
+            }
+            else {
+                return false; // unknown or empty token
+            }
+        }
+
+        out = std::move(parsed);
+        return !out.empty();
+    }
+
+    // ------------------------------------------------------------------------
+    // Parse periodic boundaries: comma-separated list of
+    //   x | y | xy | both | all | none      (0 / 1 are aliases for x / y)
+    // e.g. "x", "x,y", "both", "none". Unlisted dimensions are non-periodic.
+    // ------------------------------------------------------------------------
+    static bool parse_periodic(const char* value, std::array<bool, 2>& out)
+    {
+        if (value == nullptr || *value == '\0') {
             return false;
         }
 
-        sizes = std::move(parsed_sizes);
+        std::array<bool, 2> parsed = {false, false};
+
+        for (const auto& raw : split_commas(value)) {
+            const std::string token = normalize_token(raw);
+
+            if (token == "x" || token == "0") {
+                parsed[0] = true;
+            }
+            else if (token == "y" || token == "1") {
+                parsed[1] = true;
+            }
+            else if (token == "xy" || token == "yx" ||
+                     token == "both" || token == "all") {
+                parsed = {true, true};
+            }
+            else if (token == "none") {
+                // explicitly non-periodic; changes nothing
+            }
+            else {
+                return false; // unknown or empty token
+            }
+        }
+
+        out = parsed;
         return true;
     }
 
     // ------------------------------------------------------------------------
-    // Parse standard benchmark arguments.
-    //
-    // Returns false when parsing should terminate:
-    //   - --help
-    //   - invalid argument
-    //
-    // Returns true otherwise.
+    // Parse "strong" | "weak" | "both".
     // ------------------------------------------------------------------------
-    bool parse_arg(
-        const char* arg,
-        int argc,
-        char* argv[],
-        int& i,
-        BenchmarkConfig& config,
-        int rank)
+    static bool parse_scalings(const char* value, std::vector<Scaling>& out)
     {
-        // --------------------------------------------------------------------
-        // Help
-        // --------------------------------------------------------------------
-        if (std::strcmp(arg, "--help") == 0 ||
-            std::strcmp(arg, "-h") == 0) {
-
-            if (rank == 0) {
-                print_usage(argv[0]);
-            }
-
+        if (value == nullptr) {
             return false;
         }
 
-        // --------------------------------------------------------------------
-        // Warmup iterations
-        // --------------------------------------------------------------------
-        if (std::strcmp(arg, "--warmup-iters") == 0 ||
-            std::strcmp(arg, "-w") == 0) {
+        const std::string token = normalize_token(value);
 
-            if (i + 1 >= argc) {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: " << arg
-                        << " requires a value\n";
-                }
-                return false;
-            }
-
-            int value = 0;
-
-            if (!parse_int(argv[++i], value) || value < 0) {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: Warmup iterations must be "
-                        << "a non-negative integer\n";
-                }
-                return false;
-            }
-
-            config.warmup_iters = value;
-            return true;
+        if (token == "strong") {
+            out = {Scaling::STRONG};
+        }
+        else if (token == "weak") {
+            out = {Scaling::WEAK};
+        }
+        else if (token == "both" || token == "all") {
+            out = {Scaling::STRONG, Scaling::WEAK};
+        }
+        else {
+            return false;
         }
 
-        // --------------------------------------------------------------------
-        // Benchmark iterations
-        // --------------------------------------------------------------------
-        if (std::strcmp(arg, "--bench-iters") == 0 ||
-            std::strcmp(arg, "-b") == 0) {
+        return true;
+    }
 
-            if (i + 1 >= argc) {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: " << arg
-                        << " requires a value\n";
-                }
-                return false;
-            }
-
-            int value = 0;
-
-            if (!parse_int(argv[++i], value) || value <= 0) {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: Benchmark iterations must be "
-                        << "a positive integer\n";
-                }
-                return false;
-            }
-
-            config.benchmark_iters = value;
-            return true;
+    // ------------------------------------------------------------------------
+    // Parse a list of positive integers. Common separator mistakes
+    // ('/', ';', '|') are silently treated as commas. The result is sorted
+    // in ascending order and duplicates are removed.
+    // ------------------------------------------------------------------------
+    static bool parse_sizes(const char* value, std::vector<int>& sizes)
+    {
+        if (value == nullptr || *value == '\0') {
+            return false;
         }
 
-        // --------------------------------------------------------------------
+        std::string input(value);
+
+        std::replace_if(
+            input.begin(), input.end(),
+            [](char c) { return c == '/' || c == ';' || c == '|'; },
+            ',');
+
+        std::vector<int> parsed;
+
+        for (const auto& raw : split_commas(input)) {
+            const std::string token = trim_copy(raw);
+
+            int size = 0;
+            if (!parse_int(token.c_str(), size) || size <= 0) {
+                return false;
+            }
+
+            parsed.push_back(size);
+        }
+
+        std::sort(parsed.begin(), parsed.end());
+        parsed.erase(std::unique(parsed.begin(), parsed.end()), parsed.end());
+
+        sizes = std::move(parsed);
+        return !sizes.empty();
+    }
+
+    // ------------------------------------------------------------------------
+    // Fetch the value following an option, or throw.
+    // ------------------------------------------------------------------------
+    static const char* require_value(
+        const char* arg, int argc, char* argv[], int& i)
+    {
+        if (i + 1 >= argc) {
+            throw std::runtime_error(
+                std::string("Error: ") + arg + " requires a value");
+        }
+        return argv[++i];
+    }
+
+    // ------------------------------------------------------------------------
+    // Parse one argument. Throws std::runtime_error on invalid input.
+    // ------------------------------------------------------------------------
+    ArgResult parse_arg(
+        const char* arg, int argc, char* argv[], int& i, BenchmarkConfig& config)
+    {
+        const auto is = [arg](const char* a, const char* b = nullptr) {
+            return std::strcmp(arg, a) == 0 ||
+                   (b != nullptr && std::strcmp(arg, b) == 0);
+        };
+
+        // Help
+        if (is("--help", "-h")) {
+            return ArgResult::HELP;
+        }
+
+        // Warmup time
+        if (is("--warmup-time", "-w")) {
+            double v = 0.0;
+            if (!parse_double(require_value(arg, argc, argv, i), v) || v < 0.0) {
+                throw std::runtime_error(
+                    "Error: Warmup time must be a non-negative number of seconds");
+            }
+            config.warmup_time = v;
+            return ArgResult::OK;
+        }
+
+        // Benchmark time
+        if (is("--bench-time", "-b")) {
+            double v = 0.0;
+            if (!parse_double(require_value(arg, argc, argv, i), v) || v <= 0.0) {
+                throw std::runtime_error(
+                    "Error: Benchmark time must be a positive number of seconds");
+            }
+            config.benchmark_time = v;
+            return ArgResult::OK;
+        }
+
         // Memory limit
-        // --------------------------------------------------------------------
-        if (std::strcmp(arg, "--memory-limit") == 0 ||
-            std::strcmp(arg, "-m") == 0) {
-
-            if (i + 1 >= argc) {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: " << arg
-                        << " requires a value\n";
-                }
-                return false;
+        if (is("--memory-limit", "-m")) {
+            double v = 0.0;
+            if (!parse_double(require_value(arg, argc, argv, i), v) || v <= 0.0) {
+                throw std::runtime_error(
+                    "Error: Memory limit must be a positive number");
             }
-
-            double value = 0.0;
-
-            if (!parse_double(argv[++i], value) || value <= 0.0) {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: Memory limit must be "
-                        << "a positive number\n";
-                }
-                return false;
-            }
-
-            config.memory_limit_gb = value;
-            return true;
+            config.memory_limit_gb = v;
+            return ArgResult::OK;
         }
 
-        // --------------------------------------------------------------------
         // Output file
-        // --------------------------------------------------------------------
-        if (std::strcmp(arg, "--output") == 0 ||
-            std::strcmp(arg, "-o") == 0) {
-
-            if (i + 1 >= argc) {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: " << arg
-                        << " requires a filename\n";
-                }
-                return false;
+        if (is("--output", "-o")) {
+            const std::string file = require_value(arg, argc, argv, i);
+            if (file.empty()) {
+                throw std::runtime_error(
+                    "Error: Output filename must not be empty");
             }
-
-            config.output_file = argv[++i];
-
-            if (config.output_file.empty()) {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: Output filename must not be empty\n";
-                }
-                return false;
-            }
-
-            return true;
+            config.output_file = file;
+            return ArgResult::OK;
         }
 
-        // --------------------------------------------------------------------
         // Precision
-        // --------------------------------------------------------------------
-        if (std::strcmp(arg, "--precision") == 0) {
-
-            if (i + 1 >= argc) {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: --precision requires a value\n";
-                }
-                return false;
+        if (is("--precision")) {
+            if (!parse_precisions(require_value(arg, argc, argv, i),
+                                  config.precision)) {
+                throw std::runtime_error(
+                    "Error: --precision must be 'all' or a comma-separated "
+                    "list of: 'single', 'double' ('both' = single,double)");
             }
-
-            const std::string value = lowercase_copy(argv[++i]);
-
-            if (value == "single") {
-                config.precision = Precision::SINGLE;
-            }
-            else if (value == "double") {
-                config.precision = Precision::DOUBLE;
-            }
-            else if (value == "both") {
-                config.precision = Precision::BOTH;
-            }
-            else {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: Precision must be "
-                        << "'single', 'double', or 'both'\n";
-                }
-                return false;
-            }
-
-            return true;
+            return ArgResult::OK;
         }
 
-        // --------------------------------------------------------------------
+        // Periodic boundaries
+        if (is("--periodic")) {
+            if (!parse_periodic(require_value(arg, argc, argv, i),
+                                config.periodic)) {
+                throw std::runtime_error(
+                    "Error: --periodic must be a comma-separated list of: "
+                    "'x', 'y', 'both', 'none'");
+            }
+            return ArgResult::OK;
+        }
+
         // Scaling
-        // --------------------------------------------------------------------
-        if (std::strcmp(arg, "--scaling") == 0) {
-
-            if (i + 1 >= argc) {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: --scaling requires a value\n";
-                }
-                return false;
+        if (is("--scaling")) {
+            if (!parse_scalings(require_value(arg, argc, argv, i),
+                                config.scaling)) {
+                throw std::runtime_error(
+                    "Error: Scaling must be 'strong', 'weak', or 'both'");
             }
-
-            const std::string value = lowercase_copy(argv[++i]);
-
-            if (value == "strong") {
-                config.scaling = Scaling::STRONG;
-            }
-            else if (value == "weak") {
-                config.scaling = Scaling::WEAK;
-            }
-            else if (value == "both") {
-                config.scaling = Scaling::BOTH;
-            }
-            else {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: Scaling must be "
-                        << "'strong', 'weak', or 'both'\n";
-                }
-                return false;
-            }
-
-            return true;
+            return ArgResult::OK;
         }
 
-        // --------------------------------------------------------------------
         // Backend
-        // --------------------------------------------------------------------
-        if (std::strcmp(arg, "--backend") == 0) {
-
-            if (i + 1 >= argc) {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: --backend requires a value\n";
-                }
-                return false;
+        if (is("--backend")) {
+            if (!parse_backends(require_value(arg, argc, argv, i),
+                                config.backends)) {
+                throw std::runtime_error(
+                    "Error: --backend must be 'all' or a comma-separated list of: "
+                    "'mpi-blocking', 'mpi-nonblocking', "
+                    "'kc-blocking', 'kc-nonblocking'");
             }
-
-            std::vector<Backend> backends;
-
-            if (!parse_backends(argv[++i], backends)) {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: --backend must be 'all' or a "
-                        << "comma-separated list of: "
-                        << "'mpi-blocking', 'kokkoscomm'\n";
-                }
-                return false;
-            }
-
-            config.backends = std::move(backends);
-            return true;
+            return ArgResult::OK;
         }
 
-        // --------------------------------------------------------------------
-        // Grid sizes
-        // --------------------------------------------------------------------
-        if (std::strcmp(arg, "--sizes") == 0) {
-
-            if (i + 1 >= argc) {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: --sizes requires a "
-                        << "comma-separated list\n";
-                }
-                return false;
-            }
-
+        // Grid sizes: --sizes sets both lists, the others set one of them.
+        // Later options override earlier ones.
+        if (is("--sizes") || is("--strong-sizes") || is("--weak-sizes")) {
             std::vector<int> sizes;
-
-            if (!parse_sizes(argv[++i], sizes)) {
-                if (rank == 0) {
-                    std::cerr
-                        << "Error: --sizes must contain "
-                        << "positive integers separated by commas\n";
-                }
-                return false;
+            if (!parse_sizes(require_value(arg, argc, argv, i), sizes)) {
+                throw std::runtime_error(
+                    std::string("Error: ") + arg +
+                    " must contain positive integers separated by commas");
             }
 
-            config.sizes = std::move(sizes);
-            return true;
+            if (!is("--weak-sizes")) {
+                config.strong_sizes = sizes;
+            }
+            if (!is("--strong-sizes")) {
+                config.weak_sizes = std::move(sizes);
+            }
+            return ArgResult::OK;
         }
 
-        // --------------------------------------------------------------------
-        // Benchmark metrics
-        // --------------------------------------------------------------------
-        if (std::strcmp(arg, "--cell-updates") == 0) {
-            config.measure_cell_updates = true;
-            return true;
-        }
+        return ArgResult::NOT_STANDARD;
+    }
 
-        if (std::strcmp(arg, "--no-cell-updates") == 0) {
-            config.measure_cell_updates = false;
-            return true;
+    // Join a list of ints for the usage text.
+    static std::string join(const std::vector<int>& values)
+    {
+        std::ostringstream os;
+        for (std::size_t k = 0; k < values.size(); ++k) {
+            os << (k ? "," : "") << values[k];
         }
-
-        if (std::strcmp(arg, "--comm-bandwidth") == 0) {
-            config.measure_comm_bandwidth = true;
-            return true;
-        }
-
-        if (std::strcmp(arg, "--no-comm-bandwidth") == 0) {
-            config.measure_comm_bandwidth = false;
-            return true;
-        }
-
-        if (std::strcmp(arg, "--reduction") == 0) {
-            config.measure_reduction = true;
-            return true;
-        }
-
-        if (std::strcmp(arg, "--no-reduction") == 0) {
-            config.measure_reduction = false;
-            return true;
-        }
-        // --------------------------------------------------------------------
-        // Not a standard argument.
-        // --------------------------------------------------------------------
-        return false;
+        return os.str();
     }
 
 public:
 
-    explicit BenchmarkParser(
-        const std::string& name = "benchmark")
+    explicit BenchmarkParser(const std::string& name = "benchmark")
         : benchmark_name(name)
     {
     }
 
-
     // ------------------------------------------------------------------------
-    // Print command-line usage.
+    // Print command-line usage. Defaults are taken from BenchmarkConfig so
+    // the help text can never drift from the actual defaults.
     // ------------------------------------------------------------------------
     void print_usage(const char* program_name) const
     {
-        std::cout
-            << "Usage: " << program_name << " [options]\n\n";
+        const BenchmarkConfig d;
 
-        // --------------------------------------------------------------------
-        // General
-        // --------------------------------------------------------------------
         std::cout
+            << benchmark_name << "\n"
+            << "Usage: " << program_name << " [options]\n\n"
+
             << "General options:\n"
             << "  -h, --help\n"
-            << "        Show this help message and exit.\n\n";
+            << "        Show this help message and exit.\n\n"
 
-        // --------------------------------------------------------------------
-        // Iteration control
-        // --------------------------------------------------------------------
-        std::cout
             << "Iteration control:\n"
-            << "  -w, --warmup-iters N\n"
-            << "        Number of warmup iterations before timing.\n"
-            << "        (default: 500)\n\n"
+            << "  -w, --warmup-time SECONDS\n"
+            << "        Warmup duration before timing.\n"
+            << "        (default: " << d.warmup_time << ")\n\n"
 
-            << "  -b, --bench-iters N\n"
-            << "        Number of timed benchmark iterations.\n"
-            << "        (default: 10000)\n\n";
+            << "  -b, --bench-time SECONDS\n"
+            << "        Duration of the timed benchmark.\n"
+            << "        (default: " << d.benchmark_time << ")\n\n"
 
-        // --------------------------------------------------------------------
-        // Benchmark configuration
-        // --------------------------------------------------------------------
-        std::cout
             << "Benchmark configuration:\n"
             << "  --backend LIST\n"
-            << "        Communication backend(s) / implementation(s) to run,\n"
-            << "        comma-separated, or 'all':\n"
-            << "            mpi-blocking  -> blocking MPI Isend/Irecv/Waitall\n"
-            << "            kc-blocking   -> blocking KokkosComm (MPI or NCCL transport,\n"
-            << "                             chosen at compile time)\n"
-            << "        Example: --backend mpi-blocking,kc-blocking\n"
+            << "        Communication backend(s), comma-separated, or 'all / blocking / non-blocking':\n"
+            << "            mpi-blocking     -> blocking MPI\n"
+            << "            mpi-nonblocking  -> non-blocking MPI\n"
+            << "            kc-mpi-blocking      -> blocking KokkosComm\n"
+            << "            kc-mpi-nonblocking   -> non-blocking KokkosComm\n"
+            << "            kc-ccl-blocking      -> blocking KokkosCCL\n"
+            << "            kc-ccl-nonblocking   -> non-blocking KokkosCCL\n"
+            << "        Example: --backend mpi-blocking,kc-mpi-blocking\n"
             << "        (default: mpi-blocking)\n\n"
 
-            << "  --precision TYPE\n"
-            << "        Floating-point precision:\n"
+            << "  --precision LIST\n"
+            << "        Precision(s), comma-separated, or 'all':\n"
             << "            single  -> single precision\n"
             << "            double  -> double precision\n"
-            << "            both    -> both precisions\n"
-            << "        (default: both)\n\n"
+            << "            both    -> alias for single,double\n"
+            << "        Example: --precision single,double\n"
+            << "        (default: double)\n\n"
+
+            << "  --periodic LIST\n"
+            << "        Periodic boundaries, comma-separated:\n"
+            << "            x      -> periodic in dimension 0\n"
+            << "            y      -> periodic in dimension 1\n"
+            << "            both   -> periodic in both dimensions\n"
+            << "            none   -> no periodic boundaries\n"
+            << "        Example: --periodic x,y\n"
+            << "        (default: none)\n\n"
 
             << "  --scaling TYPE\n"
-            << "        Scaling behavior:\n"
-            << "            strong  -> --sizes gives the fixed GLOBAL\n"
-            << "                       problem size, split across ranks\n"
-            << "            weak    -> --sizes gives the fixed LOCAL\n"
-            << "                       (per-rank) problem size\n"
-            << "            both    -> run both strong and weak scaling\n"
+            << "        strong -> --sizes gives the fixed GLOBAL problem size,\n"
+            << "                  split across ranks\n"
+            << "        weak   -> --sizes gives the fixed LOCAL (per-rank) size\n"
+            << "        both   -> run both\n"
             << "        (default: strong)\n\n"
 
             << "  --sizes LIST\n"
-            << "        Comma-separated grid sizes.\n"
-            << "        Example: 32,64,128,256\n"
-            << "        (default: 32,64,128,256,512,1024,2048,4096)\n\n";
+            << "        Comma-separated grid sizes, used for both scalings.\n"
+            << "        Example: 32,64,128,256\n\n"
 
-        // --------------------------------------------------------------------
-        // Metrics
-        // --------------------------------------------------------------------
-        std::cout
-            << "Metrics:\n"
-            << "  --cell-updates\n"
-            << "        Enable cell-update measurements.\n"
-            << "        (default: enabled)\n\n"
+            << "  --strong-sizes LIST / --weak-sizes LIST\n"
+            << "        Grid sizes for one scaling mode only. Later options\n"
+            << "        override earlier ones.\n"
+            << "        (default strong: " << join(d.strong_sizes) << ")\n"
+            << "        (default weak:   " << join(d.weak_sizes) << ")\n\n"
 
-            << "  --no-cell-updates\n"
-            << "        Disable cell-update measurements.\n\n"
-
-            << "  --comm-bandwidth\n"
-            << "        Enable communication-bandwidth measurements.\n"
-            << "        (default: enabled)\n\n"
-
-            << "  --no-comm-bandwidth\n"
-            << "        Disable communication-bandwidth measurements.\n\n"
-
-            << "  --reduction\n"
-            << "        Enable per-iteration global field reductions.\n"
-            << "        (default: disabled)\n\n"
-
-            << "  --no-reduction\n"
-            << "        Disable per-iteration global field reductions.\n\n";
-
-        // --------------------------------------------------------------------
-        // Resource limits
-        // --------------------------------------------------------------------
-        std::cout
             << "Resource limits:\n"
             << "  -m, --memory-limit GB\n"
             << "        Maximum memory budget in GB.\n"
-            << "        (default: 128 GB)\n\n";
+            << "        (default: " << d.memory_limit_gb << ")\n\n"
 
-        // --------------------------------------------------------------------
-        // Output
-        // --------------------------------------------------------------------
-        std::cout
             << "Output:\n"
             << "  -o, --output FILE\n"
             << "        CSV file used to store benchmark results.\n"
-            << "        (default: benchmark_results.csv)\n";
+            << "        (default: " << d.output_file << ")\n";
     }
 
     // ------------------------------------------------------------------------
     // Parse all arguments.
     //
     // Returns:
-    //   true  -> parsing succeeded
-    //   false -> help requested
+    //   true  -> parsing succeeded, run the benchmark
+    //   false -> help was requested (usage printed on rank 0)
     //
-    // Throws std::runtime_error on an invalid argument.
+    // Throws std::runtime_error with a descriptive message on invalid input.
     // ------------------------------------------------------------------------
-    bool parse(
-        int argc,
-        char* argv[],
-        BenchmarkConfig& config,
-        int rank = 0)
+    bool parse(int argc, char* argv[], BenchmarkConfig& config, int rank = 0)
     {
         for (int i = 1; i < argc; ++i) {
-            const bool is_help =
-                std::strcmp(argv[i], "--help") == 0 ||
-                std::strcmp(argv[i], "-h") == 0;
+            switch (parse_arg(argv[i], argc, argv, i, config)) {
+                case ArgResult::OK:
+                    break;
 
-            if (!parse_arg(
-                    argv[i],
-                    argc,
-                    argv,
-                    i,
-                    config,
-                    rank)) {
-
-                if (is_help) {
+                case ArgResult::HELP:
+                    if (rank == 0) {
+                        print_usage(argv[0]);
+                    }
                     return false;
-                }
 
-                throw std::runtime_error(
-                    "Error: Invalid argument: " + std::string(argv[i]));
+                case ArgResult::NOT_STANDARD:
+                    throw std::runtime_error(
+                        "Error: Invalid argument: " + std::string(argv[i]));
             }
         }
 

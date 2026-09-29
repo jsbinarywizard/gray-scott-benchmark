@@ -4,24 +4,10 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
-#include "benchmark.hpp" // Needed for the defintion of the `results` struct.
+#include "../benchmarks/benchmark.hpp" // Needed for the definition of `results`.
 #include "arguments.hpp" // Needed for the defintions of Backend, Scaling, and Precision enums.
-
-// -----------------------------------------------------------------------------
-// Human-readable name for a concrete scaling result. Deliberately does not
-// handle Scaling::BOTH -- that value means "run both", it is never the
-// scaling of an individual row (main.cpp expands it via scalings_to_run()
-// before any row is produced).
-// -----------------------------------------------------------------------------
-inline const char* scaling_name(Scaling scaling) {
-    switch (scaling) {
-        case Scaling::STRONG: return "strong";
-        case Scaling::WEAK:   return "weak";
-        case Scaling::BOTH:   break;
-    }
-    throw std::logic_error("scaling_name() called with Scaling::BOTH");
-}
 
 template <typename real>
 const char* precision_name() {
@@ -42,12 +28,9 @@ struct BenchmarkRow {
     int size = 0;
 
     double total_time = 0.0;
-    double communication_time = 0.0;
     double updates_per_second = 0.0;
-
-    double communication_fraction() const {
-        return total_time > 0.0 ? communication_time / total_time : 0.0;
-    }
+    int iterations = 0;
+    double communication_time = 0.0;
 
     static BenchmarkRow from_results(
         const results& r,
@@ -63,9 +46,10 @@ struct BenchmarkRow {
         row.scaling = scaling;
         row.ranks = ranks;
         row.size = size;
+        row.iterations = r.iterations;
         row.total_time = r.total_time;
-        row.communication_time = r.communication_time;
         row.updates_per_second = r.updates_per_second;
+        row.communication_time = r.communication_time;
         return row;
     }
 };
@@ -105,9 +89,7 @@ public:
     }
 
     static std::string header() {
-        return "backend,precision,scaling,ranks,size,total_time,"
-               "communication_time,communication_fraction,"
-               "updates_per_second";
+        return "backend,precision,scaling,ranks,size,iterations,total_time,updates_per_second,communication_time";
     }
 
     void write(const BenchmarkRow& row) {
@@ -121,17 +103,10 @@ public:
             << scaling_name(row.scaling) << ','
             << row.ranks << ','
             << row.size << ','
+            << row.iterations << ','
             << row.total_time << ','
-            << row.communication_time << ','
-            << row.communication_fraction() << ','
-            << row.updates_per_second << '\n';
-
-        // std::cout
-        //     << "  [" << backend_name(row.backend) << "/" << scaling_name(row.scaling)
-        //     << "/" << row.precision << "] size=" << row.size
-        //     << " total=" << row.total_time << "s"
-        //     << " comm=" << row.communication_time << "s"
-        //     << " updates/s=" << row.updates_per_second << '\n';
+            << row.updates_per_second << ','
+            << row.communication_time << '\n';
     }
 
     void skip(Backend backend, const std::string& precision, Scaling scaling,

@@ -119,6 +119,7 @@ void gs_compute_ring(
     const auto v_out_ = v_out;
     const auto c_ = c;
 
+    // Fuse Kernel calls, as the kernel is very small and the overhead of launching a kernel is significant.
     Kokkos::parallel_for(
         "compute ring top/bottom",
         Kokkos::RangePolicy<int>(1, columns + 1),
@@ -136,23 +137,4 @@ void gs_compute_ring(
                 gs_kernel(i, columns, u_, v_, u_out_, v_out_, c_);
             });
     }
-}
-
-template <typename real>
-real local_reduction(const gs_view<real> in)
-{
-    const int rows = static_cast<int>(in.extent(0));
-    const int columns = static_cast<int>(in.extent(1));
-    real checksum = 0;
-
-    Kokkos::parallel_reduce(
-        "checksum",
-        Kokkos::MDRangePolicy<Kokkos::Rank<2>>(
-            {1, 1}, {rows - 1, columns - 1}),
-        KOKKOS_LAMBDA(const int i, const int j, real& local_sum) {
-            local_sum += in(i, j);
-        },
-        checksum);
-
-    return checksum;
 }

@@ -9,16 +9,13 @@
 #include <type_traits>
 #include <vector>
 
-#include "../common/benchmark.hpp"
+#include "../benchmarks/benchmark.hpp"
 #include "../common/arguments.hpp"
 #include "../common/parameters.hpp"
 #include "../common/output.hpp"
 
-#include "../mpi/gs_mpi_blocking.hpp"
-#include "../mpi/gs_mpi_async.hpp"
-
-#include "../kc/gs_kc_blocking.hpp"
-#include "../kc/gs_kc_async.hpp"
+#include "../benchmarks/gs_mpi.hpp"
+#include "../benchmarks/gs_kc.hpp"
 
 namespace {
 
@@ -29,17 +26,23 @@ namespace {
 // benchmark_cli.hpp) -- nothing else in main.cpp changes.
 // -----------------------------------------------------------------------------
 template <typename real>
-std::unique_ptr<benchmark<real>> make_benchmark(Backend backend, const Parameters& parameters) {
+std::unique_ptr<benchmark<real>> make_benchmark(
+    Backend backend, const Parameters& parameters, const Decomposition& decomposition) {
     switch (backend) {
         case Backend::MPI_BLOCKING:
-            return std::make_unique<GS_MPI_Blocking<real>>(parameters);
+            return std::make_unique<GS_MPI_Blocking<real>>(parameters, decomposition);
         case Backend::MPI_NONBLOCKING:
-            return std::make_unique<GS_MPI_NonBlocking<real>>(parameters);
+            return std::make_unique<GS_MPI_NonBlocking<real>>(parameters, decomposition);
 
-        case Backend::KC_BLOCKING:
-            return std::make_unique<GS_KC_Blocking<real>>(parameters);
-        case Backend::KC_NONBLOCKING:
-            return std::make_unique<GS_KC_NonBlocking<real>>(parameters);
+        case Backend::KC_MPI_BLOCKING:
+            return std::make_unique<GS_KC_Blocking<real>>(parameters, decomposition);
+        case Backend::KC_MPI_NONBLOCKING:
+            return std::make_unique<GS_KC_NonBlocking<real>>(parameters, decomposition);
+
+        case Backend::KC_CCL_BLOCKING:
+            return std::make_unique<GS_KC_Blocking<real, true>>(parameters, decomposition);
+        case Backend::KC_CCL_NONBLOCKING:
+            return std::make_unique<GS_KC_NonBlocking<real, true>>(parameters, decomposition);
     }
 
     throw std::runtime_error("Unknown backend.");
@@ -57,22 +60,13 @@ double estimated_local_gb(int local_rows, int local_columns, int process_count) 
     return n_fields * cells * sizeof(real) / ((1024.0 * 1024.0 * 1024.0) / static_cast<double>(process_count));
 }
 
-// Scaling::BOTH is a sweep instruction, not a value run() understands --
-// expand it here, once, rather than every caller having to remember to.
-std::vector<Scaling> scalings_to_run(Scaling scaling) {
-    if (scaling == Scaling::BOTH) {
-        return {Scaling::STRONG, Scaling::WEAK};
-    }
-    return {scaling};
-}
-
 // -----------------------------------------------------------------------------
 // Build Parameters for one (backend, scaling, size, precision) combination
 // and execute it.
 // -----------------------------------------------------------------------------
 template <typename real>
 bool run_one(const BenchmarkConfig& config, Backend backend, Scaling scal,
-             int size, int rank, ResultsWriter& writer) {
+             int size, int rank, const Decomposition& decomposition, ResultsWriter& writer) {
 
     writer.note("Running backend " + std::string(backend_name(backend)) +
                 ", precision " + std::string(precision_name<real>()) +
@@ -80,21 +74,22 @@ bool run_one(const BenchmarkConfig& config, Backend backend, Scaling scal,
                 ", size " + std::to_string(size) + "...");
 
     Parameters parameters;
-    parameters.warmup_iters = config.warmup_iters;
-    parameters.benchmark_iters = config.benchmark_iters;
+    parameters.warmup_time = config.warmup_time;
+    parameters.benchmark_time = config.benchmark_time;
     parameters.rows = size;
     parameters.columns = size;
-    parameters.measure_cell_updates = config.measure_cell_updates;
-    parameters.measure_comm_bandwidth = config.measure_comm_bandwidth;
-    parameters.measure_reduction = config.measure_reduction;
     parameters.strong_scaling = (scal == Scaling::STRONG);
 
     const bool strong_scaling = parameters.strong_scaling;
     int process_count = 1;
-    if (strong_scaling)
-        MPI_Comm_size(MPI_COMM_WORLD, &process_count);    // For strong scaling, the field size is fixed and spread across all ranks, so we need to check the memory limit against the per-rank size. 
-    // For weak scaling, each rank has its own local size, so we only need to check the memory limit against the local size.
-
+    if (strong_scaling) {
+        // For strong scaling, the field size is fixed and spread across all
+        // ranks, so the memory limit must be checked against the per-rank
+        // size once that's accounted for.
+        MPI_Comm_size(MPI_COMM_WORLD, &process_count);
+    }
+    // For weak scaling, each rank has its own local size, so the memory
+    // limit is checked against the local size directly (process_count == 1).
 
     const double gb = estimated_local_gb<real>(size, size, process_count);
     if (gb > config.memory_limit_gb) {
@@ -104,7 +99,7 @@ bool run_one(const BenchmarkConfig& config, Backend backend, Scaling scal,
         return false;
     }
 
-    auto bm = make_benchmark<real>(backend, parameters);
+    auto bm = make_benchmark<real>(backend, parameters, decomposition);
 
     results r;
     bm->run(r);
@@ -123,22 +118,6 @@ bool run_one(const BenchmarkConfig& config, Backend backend, Scaling scal,
 
 int main(int argc, char* argv[]) {
     MPI_Init(&argc, &argv);
-
-#if defined(KOKKOSCOMM_ENABLE_NCCL)
-    {
-        // Bind each rank to a distinct GPU on its node before Kokkos/NCCL
-        // initialize, based on node-local rank. Harmless (and unused) for
-        // backends that don't need a GPU; only built into NCCL-enabled
-        // binaries in the first place.
-        int local_rank = 0;
-        MPI_Comm local_comm;
-        MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0,
-                             MPI_INFO_NULL, &local_comm);
-        MPI_Comm_rank(local_comm, &local_rank);
-        MPI_Comm_free(&local_comm);
-        cudaSetDevice(local_rank);
-    }
-#endif
 
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -164,33 +143,55 @@ int main(int argc, char* argv[]) {
             exit_code = 1;
         }
 
+        // `should_run`/`exit_code` are computed independently per rank (each
+        // rank calls parse() itself) and can legitimately disagree -- e.g.
+        // rank 0 fails to open the output file while other ranks' local
+        // parse succeeds. If ranks then took different branches below, the
+        // collectives inside the benchmark loop (MPI_Comm_size, and whatever
+        // GS_MPI/GS_KC do internally) would hang waiting on ranks that
+        // already returned. Reduce to a single, rank-agnostic decision
+        // before anyone branches on it.
+        int local_should_run = should_run ? 1 : 0;
+        int global_should_run = 0;
+        MPI_Allreduce(&local_should_run, &global_should_run, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
+        should_run = (global_should_run != 0);
+
+        int local_exit_code = exit_code;
+        int global_exit_code = 0;
+        MPI_Allreduce(&local_exit_code, &global_exit_code, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        exit_code = global_exit_code;
+
+        Decomposition decomposition = Decomposition(config.periodic); // Currently not supported.
+        // Need to add argument. Stuck to non-periodic for now.
+
         if (should_run) {
-            ResultsWriter writer(config.output_file, rank == 0);
+            ResultsWriter writer(config.output_file, decomposition.rank == 0);
 
-            MPI_Bcast(&exit_code, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            for (Scaling scaling : config.scaling) {
+                auto sizes = (scaling == Scaling::STRONG) ? config.strong_sizes : config.weak_sizes;
 
-            if (exit_code != 0) {
-                return exit_code;
-            }
+                // A timing estimate learned under one scaling mode doesn't
+                // transfer to the other (different local problem size per
+                // rank), so start each sweep with a clean estimate.
+                benchmark<float>::reset_timing();
+                benchmark<double>::reset_timing();
 
-            const std::vector<Scaling> scalings = scalings_to_run(config.scaling);
+                for (int size : sizes) {
+                    for (Precision precision : config.precision) {
+                        for (Backend backend : config.backends) {
 
-            for (int size : config.sizes) {
-                for (Scaling scaling : scalings) {
-                    for (Backend backend : config.backends) {
+                            if (precision == Precision::SINGLE) {
+                                run_one<float>(config, backend, scaling, size, rank, decomposition, writer);
+                            }
 
-                        if (config.precision == Precision::SINGLE ||
-                            config.precision == Precision::BOTH) {
-                            run_one<float>(config, backend, scaling, size, rank, writer);
-                        }
-
-                        if (config.precision == Precision::DOUBLE ||
-                            config.precision == Precision::BOTH) {
-                            run_one<double>(config, backend, scaling, size, rank, writer);
+                            if (precision == Precision::DOUBLE) {
+                                run_one<double>(config, backend, scaling, size, rank, decomposition, writer);
+                            }
                         }
                     }
                 }
             }
+
             writer.note("All benchmarks completed successfully.");
             writer.note("Results written to " + config.output_file);
         }
