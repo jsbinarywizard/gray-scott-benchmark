@@ -1,9 +1,8 @@
 #pragma once
 
-#include <array>
+#include <memory>
 #include <stdexcept>
 #include <type_traits>
-#include <utility>
 #include <vector>
 
 #include <mpi.h>
@@ -16,33 +15,22 @@
 #endif
 
 #include "benchmark.hpp"
-#include "../common/kernel.hpp"
 
-// CCL selects the device communication space. With CCL=false, this benchmark
-// explicitly uses MPI; with CCL=true, it uses KokkosComm's configured default
-// CCL space, such as NCCL or RCCL. The halo exchange and iteration code below
-// is independent of that choice.
 template <typename real, bool CCL = false>
-class GS_KC : public benchmark<real> {
+class GS_KC {
 protected:
-    using Base = benchmark<real>;
-    using View = typename Base::View;
+    using BlockingBuffers = typename blocking_benchmark<real>::Buffers;
+    using Buffers = typename NonBlockingBenchmark<real>::Buffers;
+    using View = typename benchmark<real>::View;
     using ExecSpace = Kokkos::DefaultExecutionSpace;
-
-    // KokkosComm makes its CCL backend the default communication space when
-    // one is enabled. MPI must therefore be selected explicitly for the
-    // non-CCL specialization.
     using CommSpace = std::conditional_t<CCL,
                                           KokkosComm::DefaultCommunicationSpace,
                                           KokkosComm::MpiSpace>;
-
     using CommHandle = KokkosComm::Communicator<CommSpace, ExecSpace>;
     using RequestType = KokkosComm::Request<CommSpace>;
 
-    explicit GS_KC(const Parameters& parameters, const Decomposition& decomposition)
-        : Base(parameters, decomposition),
-          communicator(make_communicator(decomposition)) {
-    }
+    explicit GS_KC(const Decomposition& decomposition)
+        : decomposition(decomposition), communicator(make_communicator(decomposition)) {}
 
     static CommHandle make_communicator(const Decomposition& decomposition) {
         if constexpr (!CCL) {
@@ -52,11 +40,8 @@ protected:
             static_assert(std::is_same_v<ExecSpace, Kokkos::Cuda>,
                           "NCCL communication requires Kokkos::DefaultExecutionSpace to be CUDA.");
             ncclUniqueId id{};
-            if (decomposition.rank == 0) {
-                ncclGetUniqueId(&id);
-            }
+            if (decomposition.rank == 0) ncclGetUniqueId(&id);
             MPI_Bcast(&id, sizeof(id), MPI_BYTE, 0, decomposition.comm);
-
             ncclComm_t nccl_comm{};
             ncclCommInitRank(&nccl_comm, decomposition.size, id, decomposition.rank);
             return CommHandle::from_raw(nccl_comm, ExecSpace{});
@@ -64,11 +49,8 @@ protected:
             static_assert(std::is_same_v<ExecSpace, Kokkos::HIP>,
                           "RCCL communication requires Kokkos::DefaultExecutionSpace to be HIP.");
             rcclUniqueId id{};
-            if (decomposition.rank == 0) {
-                rcclGetUniqueId(&id);
-            }
+            if (decomposition.rank == 0) rcclGetUniqueId(&id);
             MPI_Bcast(&id, sizeof(id), MPI_BYTE, 0, decomposition.comm);
-
             rcclComm_t rccl_comm{};
             rcclCommInitRank(&rccl_comm, decomposition.size, id, decomposition.rank);
             return CommHandle::from_raw(rccl_comm, ExecSpace{});
@@ -78,139 +60,104 @@ protected:
         }
     }
 
+    void exchange(BlockingBuffers& buffers, int) {
+        std::vector<RequestType> receives;
+        std::vector<RequestType> sends;
+        receives.reserve(n_directions);
+        sends.reserve(n_directions);
+        for (int direction = 0; direction < n_directions; ++direction) {
+            const int neighbor = decomposition.neighbors[direction];
+            if (neighbor == MPI_PROC_NULL) continue;
+            receives.push_back(KokkosComm::recv(
+                communicator, buffers.recv[direction], neighbor));
+        }
+        for (int direction = 0; direction < n_directions; ++direction) {
+            const int neighbor = decomposition.neighbors[direction];
+            if (neighbor == MPI_PROC_NULL) continue;
+            sends.push_back(KokkosComm::send(
+                communicator, buffers.send[direction], neighbor));
+        }
+        KokkosComm::wait_all(receives);
+        KokkosComm::wait_all(sends);
+    }
+
+    struct ExchangeState {
+        std::vector<RequestType> receives;
+        std::vector<RequestType> sends;
+    };
+
+    typename NonBlockingBenchmark<real>::ExchangeHandle start_exchange(
+        View& field, Buffers& buffers, int) {
+        auto state = std::make_shared<ExchangeState>();
+        state->receives.reserve(n_directions);
+        state->sends.reserve(n_directions);
+        for (int direction = 0; direction < n_directions; ++direction) {
+            const int neighbor = decomposition.neighbors[direction];
+            if (neighbor == MPI_PROC_NULL) continue;
+            if (NonBlockingBenchmark<real>::uses_buffer(direction)) {
+                state->receives.push_back(KokkosComm::recv(
+                    communicator, buffers.recv[direction], neighbor));
+            } else {
+                auto target = benchmark<real>::halo_subview(
+                    direction, field);
+                state->receives.push_back(KokkosComm::recv(communicator, target, neighbor));
+            }
+        }
+        for (int direction = 0; direction < n_directions; ++direction) {
+            const int neighbor = decomposition.neighbors[direction];
+            if (neighbor == MPI_PROC_NULL) continue;
+            if (NonBlockingBenchmark<real>::uses_buffer(direction)) {
+                state->sends.push_back(KokkosComm::send(
+                    communicator, buffers.send[direction], neighbor));
+            } else {
+                auto source = benchmark<real>::pack_subview(
+                    direction, field);
+                state->sends.push_back(KokkosComm::send(communicator, source, neighbor));
+            }
+        }
+
+        typename NonBlockingBenchmark<real>::ExchangeHandle handle;
+        handle.finish_receives = [this, state, &field, &buffers] {
+            KokkosComm::wait_all(state->receives);
+            for (int direction = 0; direction < n_directions; ++direction) {
+            if (this->decomposition.neighbors[direction] == MPI_PROC_NULL) continue;
+                if (NonBlockingBenchmark<real>::uses_buffer(direction)) {
+                    Kokkos::deep_copy(benchmark<real>::halo_subview(
+                        direction, field),
+                        buffers.recv[direction]);
+                }
+            }
+        };
+        handle.finish_sends = [state] { KokkosComm::wait_all(state->sends); };
+        return handle;
+    }
+
+    const Decomposition& decomposition;
     CommHandle communicator;
 };
 
 template <typename real, bool CCL = false>
-class GS_KC_Blocking : public GS_KC<real, CCL> {
-    // GS_KC<real, CCL> is a dependent base: its members are invisible to
-    // unqualified lookup, so pull in what's needed explicitly.
-    using Base = GS_KC<real, CCL>;
-    using View = typename Base::View;
-    using RequestType = typename Base::RequestType;
-
+class GS_KC_Blocking : public blocking_benchmark<real>, protected GS_KC<real, CCL> {
 public:
     explicit GS_KC_Blocking(const Parameters& parameters, const Decomposition& decomposition)
-        : Base(parameters, decomposition) {}
+        : blocking_benchmark<real>(parameters, decomposition), GS_KC<real, CCL>(decomposition) {}
 
-private:
-    void exchange(View& b) {
-        std::vector<RequestType> recv_requests{};
-        std::vector<RequestType> send_requests{};
-        recv_requests.reserve(n_directions);
-        send_requests.reserve(n_directions);
-
-        for (int dir = 0; dir < n_directions; ++dir) {
-            if (this->decomposition.neighbors[dir] == MPI_PROC_NULL) {
-                continue;
-            }
-            auto recv_subview = this->halo_subview(dir, b, this->local_rows, this->local_columns);
-            recv_requests.push_back(
-                KokkosComm::recv(
-                    this->communicator,
-                    recv_subview,
-                    this->decomposition.neighbors[dir]));
-        }
-
-        for (int dir = 0; dir < n_directions; ++dir) {
-            if (this->decomposition.neighbors[dir] == MPI_PROC_NULL) {
-                continue;
-            }
-            auto send_subview = this->pack_subview(dir, b, this->local_rows, this->local_columns);
-            send_requests.push_back(
-                KokkosComm::send(
-                    this->communicator,
-                    send_subview,
-                    this->decomposition.neighbors[dir]));
-        }
-
-        KokkosComm::wait_all(recv_requests);
-        KokkosComm::wait_all(send_requests);
-    }
-
-    void iteration() override {
-        timer comm_timer;
-        exchange(this->u);
-        exchange(this->v);
-        this->communication_time += comm_timer.elapsed();
-        gs_compute(this->u, this->v, this->u_temp, this->v_temp, this->coeffs);
-        Kokkos::fence();
-        std::swap(this->u, this->u_temp);
-        std::swap(this->v, this->v_temp);
+protected:
+    void exchange(typename blocking_benchmark<real>::Buffers& buffers, int tag_base) override {
+        GS_KC<real, CCL>::exchange(buffers, tag_base);
     }
 };
 
 template <typename real, bool CCL = false>
-class GS_KC_NonBlocking : public GS_KC<real, CCL> {
-    using Base = GS_KC<real, CCL>;
-    using View = typename Base::View;
-    using RequestType = typename Base::RequestType;
-
-    struct ExchangeHandle {
-        std::vector<RequestType> requests;
-    };
-
-    ExchangeHandle begin_exchange(View& b) {
-        ExchangeHandle h;
-        h.requests.reserve(2 * n_directions);
-
-        // Post all receives first, non-blocking.
-        for (int dir = 0; dir < n_directions; ++dir) {
-            if (this->decomposition.neighbors[dir] == MPI_PROC_NULL) {
-                continue;
-            }
-            auto recv_subview = this->halo_subview(dir, b, this->local_rows, this->local_columns);
-            h.requests.push_back(
-                KokkosComm::recv(
-                    this->communicator,
-                    recv_subview,
-                    this->decomposition.neighbors[dir]));
-        }
-
-        // Post all sends, also non-blocking -- do not wait on anything here.
-        for (int dir = 0; dir < n_directions; ++dir) {
-            if (this->decomposition.neighbors[dir] == MPI_PROC_NULL) {
-                continue;
-            }
-            auto send_subview = this->pack_subview(dir, b, this->local_rows, this->local_columns);
-            h.requests.push_back(
-                KokkosComm::send(
-                    this->communicator,
-                    send_subview,
-                    this->decomposition.neighbors[dir]));
-        }
-
-        return h;
-    }
-
-    static void end_exchange(ExchangeHandle& h) {
-        KokkosComm::wait_all(h.requests);
-    }
-
+class GS_KC_NonBlocking : public NonBlockingBenchmark<real>, protected GS_KC<real, CCL> {
 public:
     explicit GS_KC_NonBlocking(const Parameters& parameters, const Decomposition& decomposition)
-        : Base(parameters, decomposition) {}
+        : NonBlockingBenchmark<real>(parameters, decomposition), GS_KC<real, CCL>(decomposition) {}
 
-private:
-    void iteration() override {
-        ExchangeHandle u_handle = begin_exchange(this->u);
-        ExchangeHandle v_handle = begin_exchange(this->v);
-
-        // Overlap: interior compute runs while the halo is in flight.
-        gs_compute_interior(this->u, this->v, this->u_temp, this->v_temp, this->coeffs);
-
-        // Block until the halo has actually arrived. Because recv[dir]
-        // writes directly into the field's own halo cells, there is
-        // nothing left to unpack once this returns.
-        end_exchange(u_handle);
-        end_exchange(v_handle);
-
-        // Finish the cells that depend on the freshly-received halo.
-        gs_compute_ring(this->u, this->v, this->u_temp, this->v_temp, this->coeffs);
-
-        Kokkos::fence();
-
-        std::swap(this->u, this->u_temp);
-        std::swap(this->v, this->v_temp);
+protected:
+    typename NonBlockingBenchmark<real>::ExchangeHandle start_exchange(
+        typename NonBlockingBenchmark<real>::View& field,
+        typename NonBlockingBenchmark<real>::Buffers& buffers, int tag_base) override {
+        return GS_KC<real, CCL>::start_exchange(field, buffers, tag_base);
     }
 };

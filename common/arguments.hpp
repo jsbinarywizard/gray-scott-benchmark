@@ -331,10 +331,10 @@ private:
             else if (token == "mpi_nonblocking") {
                 append_unique(parsed, Backend::MPI_NONBLOCKING);
             }
-            else if (token == "kc_blocking") {
+            else if (token == "kc_mpi_blocking") {
                 append_unique(parsed, Backend::KC_MPI_BLOCKING);
             }
-            else if (token == "kc_nonblocking") {
+            else if (token == "kc_mpi_nonblocking") {
                 append_unique(parsed, Backend::KC_MPI_NONBLOCKING);
             }
             else if (token == "kc_ccl_blocking") {
@@ -607,9 +607,10 @@ private:
             if (!parse_backends(require_value(arg, argc, argv, i),
                                 config.backends)) {
                 throw std::runtime_error(
-                    "Error: --backend must be 'all' or a comma-separated list of: "
+                    "Error: --backend must be 'all / blocking / nonblocking' or a comma-separated list of: "
                     "'mpi-blocking', 'mpi-nonblocking', "
-                    "'kc-blocking', 'kc-nonblocking'");
+                    "'kc-mpi-blocking', 'kc-mpi-nonblocking', "
+                    "'kc-ccl-blocking', 'kc-ccl-nonblocking'");
             }
             return ArgResult::OK;
         }

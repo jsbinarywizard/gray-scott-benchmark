@@ -1,7 +1,8 @@
 #pragma once
 
 #include <algorithm>
-#include <cstddef>
+#include <array>
+#include <functional>
 #include <stdexcept>
 
 #include <Kokkos_Core.hpp>
@@ -92,7 +93,10 @@ public:
 protected:
     virtual void iteration() = 0;
 
-    static StridedRow pack_subview(int dir, const View& field, int r, int c) {
+public:
+    static StridedRow pack_subview(int dir, const View& field) {
+        const int r = static_cast<int>(field.extent(0)) - 2;
+        const int c = static_cast<int>(field.extent(1)) - 2;
         switch (dir) {
             case N:  return Kokkos::subview(field, 1, Kokkos::make_pair(int(1), c + 1));
             case S:  return Kokkos::subview(field, r, Kokkos::make_pair(int(1), c + 1));
@@ -106,7 +110,9 @@ protected:
         }
     }
 
-    static StridedRow halo_subview(int dir, View& field, int r, int c) {
+    static StridedRow halo_subview(int dir, const View& field) {
+        const int r = static_cast<int>(field.extent(0)) - 2;
+        const int c = static_cast<int>(field.extent(1)) - 2;
         switch (dir) {
             case N:  return Kokkos::subview(field, 0,     Kokkos::make_pair(int(1), c + 1));
             case S:  return Kokkos::subview(field, r + 1, Kokkos::make_pair(int(1), c + 1));
@@ -120,6 +126,7 @@ protected:
         }
     }
 
+protected:
     const Parameters& parameters;
     const Decomposition& decomposition;
     coefficients<real> coeffs;
@@ -162,4 +169,184 @@ private:
     static inline double time_per_iteration = 0.0;
     static inline long previous_cells = 0;
     static inline bool first_run = true;
+};
+
+template <typename real>
+class blocking_benchmark : public benchmark<real> {
+public:
+    using View = typename benchmark<real>::View;
+
+    struct Buffers {
+        using Buffer = Kokkos::View<real*>;
+
+        std::array<Buffer, n_directions> send;
+        std::array<Buffer, n_directions> recv;
+
+        Buffers(int rows, int columns) {
+            for (int direction = 0; direction < n_directions; ++direction) {
+                const int length = halo_length(direction, rows, columns);
+                send[direction] = Buffer("send", 2 * length);
+                recv[direction] = Buffer("recv", 2 * length);
+            }
+        }
+    };
+
+    explicit blocking_benchmark(const Parameters& parameters,
+                                const Decomposition& decomposition,
+                                const coefficients<real>& coeffs = coefficients<real>())
+                : benchmark<real>(parameters, decomposition, coeffs),
+                    buffers(this->local_rows, this->local_columns) {}
+
+protected:
+    void iteration() final {
+        this->communication_timer.reset();
+        pack(this->u, this->v, buffers);
+        Kokkos::fence();
+        exchange(buffers, 100);
+        unpack(this->u, this->v, buffers);
+        Kokkos::fence();
+        this->communication_time += this->communication_timer.elapsed();
+
+        gs_compute(this->u, this->v, this->u_temp, this->v_temp, this->coeffs);
+        Kokkos::fence();
+        std::swap(this->u, this->u_temp);
+        std::swap(this->v, this->v_temp);
+    }
+
+    virtual void exchange(Buffers& buffers, int tag_base) = 0;
+
+    static int halo_length(int direction, int rows, int columns) {
+        switch (direction) {
+            case N:
+            case S:
+                return columns;
+            case W:
+            case E:
+                return rows;
+            case NW:
+            case NE:
+            case SW:
+            case SE:
+                return 1;
+            default:
+                throw std::logic_error("halo_length: invalid direction");
+        }
+    }
+
+    void pack(const View u, const View v, Buffers& buffers) {
+        for (int direction = 0; direction < n_directions; ++direction) {
+            if (this->decomposition.neighbors[direction] == MPI_PROC_NULL) continue;
+            const int length = half_length(direction, u);
+            auto u_target = Kokkos::subview(buffers.send[direction],
+                                            Kokkos::make_pair(0, length));
+            auto v_target = Kokkos::subview(buffers.send[direction],
+                                            Kokkos::make_pair(length, 2 * length));
+            Kokkos::deep_copy(u_target, benchmark<real>::pack_subview(direction, u));
+            Kokkos::deep_copy(v_target, benchmark<real>::pack_subview(direction, v));
+        }
+    }
+
+    void unpack(const View u, const View v, Buffers& buffers) {
+        for (int direction = 0; direction < n_directions; ++direction) {
+            if (this->decomposition.neighbors[direction] == MPI_PROC_NULL) continue;
+            const int length = half_length(direction, u);
+            auto u_source = Kokkos::subview(buffers.recv[direction],
+                                            Kokkos::make_pair(0, length));
+            auto v_source = Kokkos::subview(buffers.recv[direction],
+                                            Kokkos::make_pair(length, 2 * length));
+            Kokkos::deep_copy(benchmark<real>::halo_subview(direction, u), u_source);
+            Kokkos::deep_copy(benchmark<real>::halo_subview(direction, v), v_source);
+        }
+    }
+
+    static int half_length(int direction, const View& field) {
+        const int rows = static_cast<int>(field.extent(0)) - 2;
+        const int columns = static_cast<int>(field.extent(1)) - 2;
+        return halo_length(direction, rows, columns);
+    }
+
+    Buffers buffers;
+};
+
+template <typename real>
+class NonBlockingBenchmark : public benchmark<real> {
+public:
+    using View = typename benchmark<real>::View;
+
+    struct Buffers {
+        using Buffer = Kokkos::View<real*>;
+
+        std::array<Buffer, n_directions> send;
+        std::array<Buffer, n_directions> recv;
+
+        Buffers(int rows, int) {
+            send[W] = Buffer("send west", rows);
+            send[E] = Buffer("send east", rows);
+            recv[W] = Buffer("recv west", rows);
+            recv[E] = Buffer("recv east", rows);
+        }
+    };
+
+    static bool uses_buffer(int direction) {
+        return direction == W || direction == E;
+    }
+
+    struct ExchangeHandle {
+        std::function<void()> finish_receives;
+        std::function<void()> finish_sends;
+
+        void wait_receives() {
+            if (finish_receives) finish_receives();
+        }
+
+        void wait_sends() {
+            if (finish_sends) finish_sends();
+        }
+    };
+
+    explicit NonBlockingBenchmark(const Parameters& parameters,
+                                  const Decomposition& decomposition,
+                                  const coefficients<real>& coeffs = coefficients<real>())
+                : benchmark<real>(parameters, decomposition, coeffs),
+                    u_buffers(this->local_rows, this->local_columns),
+                    v_buffers(this->local_rows, this->local_columns) {}
+
+protected:
+    void iteration() final {
+        pack(this->u, u_buffers);
+        pack(this->v, v_buffers);
+        Kokkos::fence();
+        ExchangeHandle u_handle = start_exchange(this->u, u_buffers, 100);
+        ExchangeHandle v_handle = start_exchange(this->v, v_buffers, 200);
+
+        gs_compute_interior(this->u, this->v, this->u_temp, this->v_temp, this->coeffs);
+
+        u_handle.wait_receives();
+        v_handle.wait_receives();
+
+        Kokkos::fence();
+
+        gs_compute_ring(this->u, this->v, this->u_temp, this->v_temp, this->coeffs);
+        Kokkos::fence();
+
+        u_handle.wait_sends();
+        v_handle.wait_sends();
+
+        std::swap(this->u, this->u_temp);
+        std::swap(this->v, this->v_temp);
+    }
+
+    virtual ExchangeHandle start_exchange(View& field, Buffers& buffers, int tag_base) = 0;
+
+    void pack(const View& field, Buffers& buffers) {
+        for (int direction = 0; direction < n_directions; ++direction) {
+            if (!uses_buffer(direction) ||
+                this->decomposition.neighbors[direction] == MPI_PROC_NULL) continue;
+            Kokkos::deep_copy(buffers.send[direction], benchmark<real>::pack_subview(
+                direction, field));
+        }
+    }
+
+    Buffers u_buffers;
+    Buffers v_buffers;
 };
