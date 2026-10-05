@@ -3,6 +3,7 @@
 #include <array>
 #include <memory>
 #include <type_traits>
+#include <vector>
 
 #include <mpi.h>
 
@@ -50,69 +51,91 @@ protected:
         MPI_Waitall(count, requests.data(), MPI_STATUSES_IGNORE);
     }
 
-    struct ExchangeState {
-        std::array<MPI_Request, n_directions> recv_requests{};
-        std::array<int, n_directions> recv_directions{};
-        int recv_count = 0;
-        std::array<MPI_Request, n_directions> send_requests{};
-        int send_count = 0;
-    };
+    class MPIExchangeHandle : public NonBlockingBenchmark<real>::ExchangeHandleBase {
+    public:
+        MPIExchangeHandle(typename NonBlockingBenchmark<real>::View& field,
+                          Buffers& buffers)
+            : field(field), buffers(buffers) {}
 
-    typename NonBlockingBenchmark<real>::ExchangeHandle start_exchange(
-        typename NonBlockingBenchmark<real>::View& field, Buffers& buffers, int tag_base) {
-        auto state = std::make_shared<ExchangeState>();
-        for (int direction = 0; direction < n_directions; ++direction) {
-            const int neighbor = decomposition.neighbors[direction];
-            if (neighbor == MPI_PROC_NULL) continue;
-            state->recv_directions[state->recv_count] = direction;
-            if (NonBlockingBenchmark<real>::uses_buffer(direction)) {
-                MPI_Irecv(buffers.recv[direction].data(),
-                          static_cast<int>(buffers.recv[direction].size()), mpi_real_type(),
-                          neighbor, tag_base + direction, decomposition.comm,
-                          &state->recv_requests[state->recv_count++]);
-            } else {
-                auto target = benchmark<real>::halo_subview(
-                    direction, field);
-                MPI_Irecv(target.data(), static_cast<int>(target.size()), mpi_real_type(),
-                          neighbor, tag_base + direction, decomposition.comm,
-                          &state->recv_requests[state->recv_count++]);
-            }
-        }
-        for (int direction = 0; direction < n_directions; ++direction) {
-            const int neighbor = decomposition.neighbors[direction];
-            if (neighbor == MPI_PROC_NULL) continue;
-            if (NonBlockingBenchmark<real>::uses_buffer(direction)) {
-                MPI_Isend(buffers.send[direction].data(),
-                          static_cast<int>(buffers.send[direction].size()), mpi_real_type(),
-                          neighbor, tag_base + opposite(direction), decomposition.comm,
-                          &state->send_requests[state->send_count++]);
-            } else {
-                auto source = benchmark<real>::pack_subview(
-                    direction, field);
-                MPI_Isend(source.data(), static_cast<int>(source.size()), mpi_real_type(),
-                          neighbor, tag_base + opposite(direction), decomposition.comm,
-                          &state->send_requests[state->send_count++]);
-            }
-        }
-
-        typename NonBlockingBenchmark<real>::ExchangeHandle handle;
-        handle.finish_receives = [state, &field, &buffers] {
-            for (int done = 0; done < state->recv_count; ++done) {
+        void wait_receives() override {
+            for (std::size_t done = 0; done < recv_requests.size(); ++done) {
                 int index = MPI_UNDEFINED;
-                MPI_Waitany(state->recv_count, state->recv_requests.data(), &index,
-                            MPI_STATUS_IGNORE);
-                const int direction = state->recv_directions[index];
+                MPI_Waitany(static_cast<int>(recv_requests.size()), recv_requests.data(),
+                            &index, MPI_STATUS_IGNORE);
+                if (index == MPI_UNDEFINED) continue;
+                const int direction = recv_directions[index];
                 if (NonBlockingBenchmark<real>::uses_buffer(direction)) {
                     Kokkos::deep_copy(benchmark<real>::halo_subview(
                         direction, field),
                         buffers.recv[direction]);
                 }
             }
-        };
-        handle.finish_sends = [state] {
-            MPI_Waitall(state->send_count, state->send_requests.data(), MPI_STATUSES_IGNORE);
-        };
-        return handle;
+        }
+
+        void wait_sends() override {
+            MPI_Waitall(static_cast<int>(send_requests.size()), send_requests.data(),
+                        MPI_STATUSES_IGNORE);
+        }
+
+        void push_send_request(MPI_Request request) {
+            send_requests.push_back(request);
+        }
+
+        void push_recv_request(MPI_Request request, int direction) {
+            recv_requests.push_back(request);
+            recv_directions.push_back(direction);
+        }
+
+    private:
+        typename NonBlockingBenchmark<real>::View& field;
+        Buffers& buffers;
+        std::vector<MPI_Request> recv_requests;
+        std::vector<MPI_Request> send_requests;
+        std::vector<int> recv_directions;
+    };
+
+    typename NonBlockingBenchmark<real>::ExchangeHandle start_exchange(
+        typename NonBlockingBenchmark<real>::View& field, Buffers& buffers, int tag_base) {
+        auto state = std::make_unique<MPIExchangeHandle>(field, buffers);
+
+        for (int direction = 0; direction < n_directions; ++direction) {
+            const int neighbor = decomposition.neighbors[direction];
+            if (neighbor == MPI_PROC_NULL) continue;
+            MPI_Request request;
+            if (NonBlockingBenchmark<real>::uses_buffer(direction)) {
+                MPI_Irecv(buffers.recv[direction].data(),
+                          static_cast<int>(buffers.recv[direction].size()), mpi_real_type(),
+                          neighbor, tag_base + direction, decomposition.comm,
+                          &request);
+            } else {
+                auto target = benchmark<real>::halo_subview(
+                    direction, field);
+                MPI_Irecv(target.data(), static_cast<int>(target.size()), mpi_real_type(),
+                          neighbor, tag_base + direction, decomposition.comm,
+                          &request);
+            }
+            state->push_recv_request(request, direction);
+        }
+        for (int direction = 0; direction < n_directions; ++direction) {
+            const int neighbor = decomposition.neighbors[direction];
+            if (neighbor == MPI_PROC_NULL) continue;
+            MPI_Request request;
+            if (NonBlockingBenchmark<real>::uses_buffer(direction)) {
+                MPI_Isend(buffers.send[direction].data(),
+                          static_cast<int>(buffers.send[direction].size()), mpi_real_type(),
+                          neighbor, tag_base + opposite(direction), decomposition.comm,
+                          &request);
+            } else {
+                auto source = benchmark<real>::pack_subview(
+                    direction, field);
+                MPI_Isend(source.data(), static_cast<int>(source.size()), mpi_real_type(),
+                          neighbor, tag_base + opposite(direction), decomposition.comm,
+                          &request);
+            }
+            state->push_send_request(request);
+        }
+
+        return state;
     }
 
     const Decomposition& decomposition;

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 
 #include <Kokkos_Core.hpp>
@@ -291,18 +292,13 @@ public:
         return direction == W || direction == E;
     }
 
-    struct ExchangeHandle {
-        std::function<void()> finish_receives;
-        std::function<void()> finish_sends;
-
-        void wait_receives() {
-            if (finish_receives) finish_receives();
-        }
-
-        void wait_sends() {
-            if (finish_sends) finish_sends();
-        }
+    class ExchangeHandleBase {
+    public:
+        virtual ~ExchangeHandleBase() = default;
+        virtual void wait_receives() = 0;
+        virtual void wait_sends() = 0;
     };
+    using ExchangeHandle = std::unique_ptr<ExchangeHandleBase>;
 
     explicit NonBlockingBenchmark(const Parameters& parameters,
                                   const Decomposition& decomposition,
@@ -321,16 +317,16 @@ protected:
 
         gs_compute_interior(this->u, this->v, this->u_temp, this->v_temp, this->coeffs);
 
-        u_handle.wait_receives();
-        v_handle.wait_receives();
+        u_handle->wait_receives();
+        v_handle->wait_receives();
 
         Kokkos::fence();
 
         gs_compute_ring(this->u, this->v, this->u_temp, this->v_temp, this->coeffs);
         Kokkos::fence();
 
-        u_handle.wait_sends();
-        v_handle.wait_sends();
+        u_handle->wait_sends();
+        v_handle->wait_sends();
 
         std::swap(this->u, this->u_temp);
         std::swap(this->v, this->v_temp);
