@@ -16,6 +16,7 @@
 
 #include "../benchmarks/gs_mpi.hpp"
 #include "../benchmarks/gs_kc.hpp"
+#include "../benchmarks/gs_ccl.hpp"
 
 namespace {
 
@@ -33,6 +34,11 @@ std::unique_ptr<benchmark<real>> make_benchmark(
             return std::make_unique<GS_MPI_Blocking<real>>(parameters, decomposition);
         case Backend::MPI_NONBLOCKING:
             return std::make_unique<GS_MPI_NonBlocking<real>>(parameters, decomposition);
+
+        case Backend::CCL_BLOCKING:
+            return std::make_unique<GS_CCL_Blocking<real>>(parameters, decomposition);
+        case Backend::CCL_NONBLOCKING:
+            return std::make_unique<GS_CCL_NonBlocking<real>>(parameters, decomposition);
 
         case Backend::KC_MPI_BLOCKING:
             return std::make_unique<GS_KC_Blocking<real>>(parameters, decomposition);
@@ -66,21 +72,22 @@ double estimated_local_gb(int local_rows, int local_columns, int process_count) 
 // -----------------------------------------------------------------------------
 template <typename real>
 bool run_one(const BenchmarkConfig& config, Backend backend, Scaling scal,
-             int size, int rank, const Decomposition& decomposition, ResultsWriter& writer) {
+             int problem_size, const Decomposition& decomposition, ResultsWriter& writer) {
 
     writer.note("Running backend " + std::string(backend_name(backend)) +
                 ", precision " + std::string(precision_name<real>()) +
                 ", scaling " + std::string(scaling_name(scal)) +
-                ", size " + std::to_string(size) + "...");
+                ", size " + std::to_string(problem_size) + "...");
 
     Parameters parameters;
     parameters.warmup_time = config.warmup_time;
     parameters.benchmark_time = config.benchmark_time;
-    parameters.rows = size;
-    parameters.columns = size;
+    parameters.rows = problem_size;
+    parameters.columns = problem_size;
     parameters.strong_scaling = (scal == Scaling::STRONG);
 
     const bool strong_scaling = parameters.strong_scaling;
+
     int process_count = 1;
     if (strong_scaling) {
         // For strong scaling, the field size is fixed and spread across all
@@ -91,9 +98,9 @@ bool run_one(const BenchmarkConfig& config, Backend backend, Scaling scal,
     // For weak scaling, each rank has its own local size, so the memory
     // limit is checked against the local size directly (process_count == 1).
 
-    const double gb = estimated_local_gb<real>(size, size, process_count);
+    const double gb = estimated_local_gb<real>(problem_size, problem_size, process_count);
     if (gb > config.memory_limit_gb) {
-        writer.skip(backend, precision_name<real>(), scal, size,
+        writer.skip(backend, precision_name<real>(), scal, problem_size,
                  "estimated " + std::to_string(gb) + " GB per rank exceeds --memory-limit " +
                  std::to_string(config.memory_limit_gb) + " GB");
         return false;
@@ -104,12 +111,12 @@ bool run_one(const BenchmarkConfig& config, Backend backend, Scaling scal,
     results r;
     bm->run(r);
 
-    writer.write(BenchmarkRow::from_results(r, backend, precision_name<real>(), scal, process_count, size));
+    writer.write(BenchmarkRow::from_results(r, backend, precision_name<real>(), scal, decomposition.size, problem_size));
 
     writer.note("  [" + std::string(backend_name(backend)) + "/" +
              std::string(scaling_name(scal)) + "/" +
              std::string(precision_name<real>()) + "] size=" +
-             std::to_string(size) + " Finished \n");
+             std::to_string(problem_size) + " Finished \n");
 
     return true;
 }
@@ -149,8 +156,7 @@ int main(int argc, char* argv[]) {
         // parse succeeds. If ranks then took different branches below, the
         // collectives inside the benchmark loop (MPI_Comm_size, and whatever
         // GS_MPI/GS_KC do internally) would hang waiting on ranks that
-        // already returned. Reduce to a single, rank-agnostic decision
-        // before anyone branches on it.
+        // already returned. Reduce to a single, rank-agnostic decisrank
         int local_should_run = should_run ? 1 : 0;
         int global_should_run = 0;
         MPI_Allreduce(&local_should_run, &global_should_run, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
@@ -176,16 +182,16 @@ int main(int argc, char* argv[]) {
                 benchmark<float>::reset_timing();
                 benchmark<double>::reset_timing();
 
-                for (int size : sizes) {
+                for (int problem_size : sizes) {
                     for (Precision precision : config.precision) {
                         for (Backend backend : config.backends) {
 
                             if (precision == Precision::SINGLE) {
-                                run_one<float>(config, backend, scaling, size, rank, decomposition, writer);
+                                run_one<float>(config, backend, scaling, problem_size, decomposition, writer);
                             }
 
                             if (precision == Precision::DOUBLE) {
-                                run_one<double>(config, backend, scaling, size, rank, decomposition, writer);
+                                run_one<double>(config, backend, scaling, problem_size, decomposition, writer);
                             }
                         }
                     }

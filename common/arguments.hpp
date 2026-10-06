@@ -76,6 +76,8 @@ inline const char* scaling_name(Scaling scaling) {
 enum class Backend {
     MPI_BLOCKING,
     MPI_NONBLOCKING,
+    CCL_BLOCKING,
+    CCL_NONBLOCKING,
     KC_MPI_BLOCKING,
     KC_MPI_NONBLOCKING,
     KC_CCL_BLOCKING,
@@ -86,6 +88,8 @@ inline const char* backend_name(Backend backend) {
     switch (backend) {
         case Backend::MPI_BLOCKING:    return "mpi_blocking";
         case Backend::MPI_NONBLOCKING: return "mpi_nonblocking";
+        case Backend::CCL_BLOCKING:    return "ccl_blocking";
+        case Backend::CCL_NONBLOCKING: return "ccl_nonblocking";
         case Backend::KC_MPI_BLOCKING:     return "kc_mpi_blocking";
         case Backend::KC_MPI_NONBLOCKING:  return "kc_mpi_nonblocking";
         case Backend::KC_CCL_BLOCKING:     return "kc_ccl_blocking";
@@ -99,6 +103,8 @@ inline const std::vector<Backend>& all_backends() {
     static const std::vector<Backend> backends = {
         Backend::MPI_BLOCKING,
         Backend::MPI_NONBLOCKING,
+        Backend::CCL_BLOCKING,
+        Backend::CCL_NONBLOCKING,
         Backend::KC_MPI_BLOCKING,
         Backend::KC_MPI_NONBLOCKING,
         Backend::KC_CCL_BLOCKING,
@@ -110,6 +116,7 @@ inline const std::vector<Backend>& all_backends() {
 inline const std::vector<Backend>& blocking_backends() {
     static const std::vector<Backend> backends = {
         Backend::MPI_BLOCKING,
+        Backend::CCL_BLOCKING,
         Backend::KC_MPI_BLOCKING,
         Backend::KC_CCL_BLOCKING
     };
@@ -119,6 +126,7 @@ inline const std::vector<Backend>& blocking_backends() {
 inline const std::vector<Backend>& nonblocking_backends() {
     static const std::vector<Backend> backends = {
         Backend::MPI_NONBLOCKING,
+        Backend::CCL_NONBLOCKING,
         Backend::KC_MPI_NONBLOCKING,
         Backend::KC_CCL_NONBLOCKING
     };

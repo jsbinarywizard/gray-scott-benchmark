@@ -90,15 +90,12 @@ protected:
         if (decomposition.rank == 0) GS_CCL_CHECK(ncclGetUniqueId(&id));
         MPI_Bcast(&id, sizeof(id), MPI_BYTE, 0, decomposition.comm);
         GS_CCL_CHECK(ncclCommInitRank(&ccl_comm, decomposition.size, id, decomposition.rank));
-        GS_GPU_CHECK(gs_ccl::stream_create(&recv_stream));
-        GS_GPU_CHECK(gs_ccl::stream_create(&send_stream));
+        GS_GPU_CHECK(gs_ccl::stream_create(&stream));
     }
 
     ~GS_CCL() {
-        gs_ccl::stream_sync(recv_stream);
-        gs_ccl::stream_sync(send_stream);
-        gs_ccl::stream_destroy(recv_stream);
-        gs_ccl::stream_destroy(send_stream);
+        gs_ccl::stream_sync(stream);
+        gs_ccl::stream_destroy(stream);
         ncclCommDestroy(ccl_comm);
     }
 
@@ -121,50 +118,41 @@ protected:
     // in ascending d; the peer receives them as opposite(d), so receives are
     // issued in ascending opposite(d).
     template <typename RecvFn, typename SendFn>
-    void post_group(gs_ccl::stream_t recv_stream, gs_ccl::stream_t send_stream,
-                    RecvFn&& recv_fn, SendFn&& send_fn) {
+    void post_group(RecvFn&& recv_fn, SendFn&& send_fn) {
         GS_CCL_CHECK(ncclGroupStart());
         for (int d = 0; d < n_directions; ++d) {
             const int r = opposite(d);
             const int neighbor = decomposition.neighbors[r];
             if (neighbor == MPI_PROC_NULL) continue;
             auto [ptr, count] = recv_fn(r);
-            GS_CCL_CHECK(ncclRecv(ptr, count, ccl_real_type(), neighbor, ccl_comm,
-                                  recv_stream));
+            GS_CCL_CHECK(ncclRecv(ptr, count, ccl_real_type(), neighbor, ccl_comm, stream));
         }
         for (int d = 0; d < n_directions; ++d) {
             const int neighbor = decomposition.neighbors[d];
             if (neighbor == MPI_PROC_NULL) continue;
             auto [ptr, count] = send_fn(d);
-            GS_CCL_CHECK(ncclSend(ptr, count, ccl_real_type(), neighbor, ccl_comm,
-                                  send_stream));
+            GS_CCL_CHECK(ncclSend(ptr, count, ccl_real_type(), neighbor, ccl_comm, stream));
         }
         GS_CCL_CHECK(ncclGroupEnd());
     }
 
     void exchange(BlockingBuffers& buffers, int) {
         Kokkos::fence();
-        post_group(recv_stream, recv_stream,
+        post_group(
             [&](int d) { return std::make_pair(static_cast<void*>(buffers.recv[d].data()),
                                                static_cast<size_t>(buffers.recv[d].size())); },
             [&](int d) { return std::make_pair(static_cast<const void*>(buffers.send[d].data()),
                                                static_cast<size_t>(buffers.send[d].size())); });
-        GS_GPU_CHECK(gs_ccl::stream_sync(recv_stream));
+        GS_GPU_CHECK(gs_ccl::stream_sync(stream));
     }
 
-    class NCCLExchangeHandle : public NonBlockingBenchmark<real>::ExchangeHandleBase {
+    class NCCLExchangeHandle : public NonBlockingBenchmark<real>::ExchangeHandle {
     public:
-        NCCLExchangeHandle(typename NonBlockingBenchmark<real>::View& field,
-                           Buffers& buffers,
-                           const Decomposition& decomposition,
-                           gs_ccl::stream_t recv_stream,
-                           gs_ccl::stream_t send_stream)
-            : field(field), buffers(buffers), decomposition(decomposition),
-              recv_stream(recv_stream), send_stream(send_stream) {}
+        NCCLExchangeHandle() {}
 
         void wait_receives() override {
-            GS_GPU_CHECK(gs_ccl::stream_sync(recv_stream));
-            for (int direction : {W, E}) {
+            KokkosComm::wait_all(receives);
+            for (int direction : S, E){
                 if (decomposition.neighbors[direction] == MPI_PROC_NULL) continue;
                 Kokkos::deep_copy(benchmark<real>::halo_subview(
                     direction, field),
@@ -173,26 +161,33 @@ protected:
         }
 
         void wait_sends() override {
-            GS_GPU_CHECK(gs_ccl::stream_sync(send_stream));
+            KokkosComm::wait_all(sends);
         }
 
-    private:
-        typename NonBlockingBenchmark<real>::View& field;
-        Buffers& buffers;
-        const Decomposition& decomposition;
-        gs_ccl::stream_t recv_stream;
-        gs_ccl::stream_t send_stream;
-    };
+        void push_send_request(ncclRequest request) {
+            send_requests[send_count++] = request;
+        }
+
+        void push_recv_request(ncclRequest request, int direction = 0) {
+            recv_requests[recv_count++] = request;
+        stdd::vector<ncclRequest> send_requests;
+        int recv_count;
+        int send_count;
+    }
+private:
+        std::vector<ncclRequest> recv_requests;
+        std::vector<ncclRequest> send_requests;
+        int recv_count;
+        int send_count;
+    }
 
     typename NonBlockingBenchmark<real>::ExchangeHandle start_exchange(
         typename NonBlockingBenchmark<real>::View& field, Buffers& buffers, int) {
         Kokkos::fence();
-        auto handle = std::make_unique<NCCLExchangeHandle>(
-            field, buffers, decomposition, recv_stream, send_stream);
+        NCCLExchangeHandle handle;
         post_group(
-            recv_stream, send_stream,
             [&](int d) {
-                if (NonBlockingBenchmark<real>::uses_buffer(d))
+                if (NonBlockingBenchmark<real>::useKokkosComm::Requests_buffer(d))
                     return std::make_pair(static_cast<void*>(buffers.recv[d].data()),
                                           static_cast<size_t>(buffers.recv[d].size()));
                 auto target = benchmark<real>::halo_subview(d, field);
@@ -214,8 +209,7 @@ protected:
 
     const Decomposition& decomposition;
     ncclComm_t ccl_comm{};
-    gs_ccl::stream_t recv_stream{};
-    gs_ccl::stream_t send_stream{};
+    gs_ccl::stream_t stream{};
 };
 
 #else
