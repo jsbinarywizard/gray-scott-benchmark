@@ -74,63 +74,39 @@ inline const char* scaling_name(Scaling scaling) {
 // BenchmarkParser::parse_backends() and the benchmark dispatch are the other
 // places that need to be updated when adding a new backend.
 enum class Backend {
-    MPI_BLOCKING,
-    MPI_NONBLOCKING,
-    CCL_BLOCKING,
-    CCL_NONBLOCKING,
-    KC_MPI_BLOCKING,
-    KC_MPI_NONBLOCKING,
-    KC_CCL_BLOCKING,
-    KC_CCL_NONBLOCKING
+    MPI,
+    CCL,
+    KC_MPI,
+    KC_CCL,
 };
 
-inline const char* backend_name(Backend backend) {
-    switch (backend) {
-        case Backend::MPI_BLOCKING:    return "mpi_blocking";
-        case Backend::MPI_NONBLOCKING: return "mpi_nonblocking";
-        case Backend::CCL_BLOCKING:    return "ccl_blocking";
-        case Backend::CCL_NONBLOCKING: return "ccl_nonblocking";
-        case Backend::KC_MPI_BLOCKING:     return "kc_mpi_blocking";
-        case Backend::KC_MPI_NONBLOCKING:  return "kc_mpi_nonblocking";
-        case Backend::KC_CCL_BLOCKING:     return "kc_ccl_blocking";
-        case Backend::KC_CCL_NONBLOCKING:  return "kc_ccl_nonblocking";
-    }
-    return "unknown";
-}
 
 // Every implemented backend, in the order in which "--backend all" runs them.
 inline const std::vector<Backend>& all_backends() {
     static const std::vector<Backend> backends = {
-        Backend::MPI_BLOCKING,
-        Backend::MPI_NONBLOCKING,
-        Backend::CCL_BLOCKING,
-        Backend::CCL_NONBLOCKING,
-        Backend::KC_MPI_BLOCKING,
-        Backend::KC_MPI_NONBLOCKING,
-        Backend::KC_CCL_BLOCKING,
-        Backend::KC_CCL_NONBLOCKING
+        Backend::MPI,
+        Backend::CCL,
+        Backend::KC_MPI,
+        Backend::KC_CCL
     };
     return backends;
 }
 
-inline const std::vector<Backend>& blocking_backends() {
-    static const std::vector<Backend> backends = {
-        Backend::MPI_BLOCKING,
-        Backend::CCL_BLOCKING,
-        Backend::KC_MPI_BLOCKING,
-        Backend::KC_CCL_BLOCKING
-    };
-    return backends;
-}
+// -----------------------------------------------------------------------------
+// Communication Pattern
+// -----------------------------------------------------------------------------
 
-inline const std::vector<Backend>& nonblocking_backends() {
-    static const std::vector<Backend> backends = {
-        Backend::MPI_NONBLOCKING,
-        Backend::CCL_NONBLOCKING,
-        Backend::KC_MPI_NONBLOCKING,
-        Backend::KC_CCL_NONBLOCKING
+enum class CommPattern {
+    BLOCKING,
+    NONBLOCKING
+};
+
+inline const std::vector<CommPattern>& all_comm_patterns() {
+    static const std::vector<CommPattern> patterns = {
+        CommPattern::BLOCKING,
+        CommPattern::NONBLOCKING
     };
-    return backends;
+    return patterns;
 }
 
 
@@ -156,7 +132,8 @@ struct BenchmarkConfig {
     // ------------------------------------------------------------------------
     std::vector<Precision> precision = {Precision::DOUBLE};
     std::vector<Scaling>   scaling   = {Scaling::STRONG};
-    std::vector<Backend>   backends  = {Backend::MPI_BLOCKING};
+    std::vector<CommPattern> comm_patterns = {CommPattern::BLOCKING};
+    std::vector<Backend>   backends  = {Backend::MPI};
 
     bool measure_cell_updates   = true; // Deleted the option to disable cell-update measurements, as it is not used in the benchmark.
 
@@ -319,37 +296,24 @@ private:
         if (normalized == "all") {
             backends = all_backends();
             return true;
-        }else if (normalized == "blocking") {
-            backends = blocking_backends();
-            return true;
-        }else if (normalized == "nonblocking") {
-            backends = nonblocking_backends();
-            return true;
         }
         
-
         std::vector<Backend> parsed;
 
         for (const auto& raw : split_commas(input)) {
             const std::string token = normalize_token(raw);
 
-            if (token == "mpi_blocking") {
-                append_unique(parsed, Backend::MPI_BLOCKING);
+            if (token == "mpi") {
+                append_unique(parsed, Backend::MPI);
             }
-            else if (token == "mpi_nonblocking") {
-                append_unique(parsed, Backend::MPI_NONBLOCKING);
+            else if (token == "ccl") {
+                append_unique(parsed, Backend::CCL);
             }
-            else if (token == "kc_mpi_blocking") {
-                append_unique(parsed, Backend::KC_MPI_BLOCKING);
+            else if (token == "kc_mpi") {
+                append_unique(parsed, Backend::KC_MPI);
             }
-            else if (token == "kc_mpi_nonblocking") {
-                append_unique(parsed, Backend::KC_MPI_NONBLOCKING);
-            }
-            else if (token == "kc_ccl_blocking") {
-                append_unique(parsed, Backend::KC_CCL_BLOCKING);
-            }
-            else if (token == "kc_ccl_nonblocking") {
-                append_unique(parsed, Backend::KC_CCL_NONBLOCKING);
+            else if (token == "kc_ccl") {
+                append_unique(parsed, Backend::KC_CCL);
             }
             else {
                 return false; // unknown or empty token
@@ -358,6 +322,40 @@ private:
 
         backends = std::move(parsed);
         return !backends.empty();
+    }
+
+    static bool parse_comm_patterns(const char* value, std::vector<CommPattern>& patterns)
+    {
+        if (value == nullptr || *value == '\0') {
+            return false;
+        }
+
+        const std::string input(value);
+
+        const auto normalized = normalize_token(input);
+        if (normalized == "all") {
+            patterns = all_comm_patterns();
+            return true;
+        }
+        
+        std::vector<CommPattern> parsed;
+
+        for (const auto& raw : split_commas(input)) {
+            const std::string token = normalize_token(raw);
+
+            if (token == "blocking") {
+                append_unique(parsed, CommPattern::BLOCKING);
+            }
+            else if (token == "nonblocking") {
+                append_unique(parsed, CommPattern::NONBLOCKING);
+            }
+            else {
+                return false; // unknown or empty token
+            }
+        }
+
+        patterns = std::move(parsed);
+        return !patterns.empty();
     }
 
     // ------------------------------------------------------------------------
@@ -615,10 +613,18 @@ private:
             if (!parse_backends(require_value(arg, argc, argv, i),
                                 config.backends)) {
                 throw std::runtime_error(
-                    "Error: --backend must be 'all / blocking / nonblocking' or a comma-separated list of: "
-                    "'mpi-blocking', 'mpi-nonblocking', "
-                    "'kc-mpi-blocking', 'kc-mpi-nonblocking', "
-                    "'kc-ccl-blocking', 'kc-ccl-nonblocking'");
+                    "Error: --backend must be 'all' or a comma-separated list of: "
+                    "'mpi', 'ccl', 'kc-mpi', 'kc-ccl'");
+            }
+            return ArgResult::OK;
+        }
+
+        if (is("--comm-pattern")) {
+            if (!parse_comm_patterns(require_value(arg, argc, argv, i),
+                                     config.comm_patterns)) {
+                throw std::runtime_error(
+                    "Error: --comm-pattern must be 'all' or a comma-separated list of: "
+                    "'blocking', 'nonblocking'");
             }
             return ArgResult::OK;
         }
@@ -689,15 +695,20 @@ public:
 
             << "Benchmark configuration:\n"
             << "  --backend LIST\n"
-            << "        Communication backend(s), comma-separated, or 'all / blocking / non-blocking':\n"
-            << "            mpi-blocking     -> blocking MPI\n"
-            << "            mpi-nonblocking  -> non-blocking MPI\n"
-            << "            kc-mpi-blocking      -> blocking KokkosComm\n"
-            << "            kc-mpi-nonblocking   -> non-blocking KokkosComm\n"
-            << "            kc-ccl-blocking      -> blocking KokkosCCL\n"
-            << "            kc-ccl-nonblocking   -> non-blocking KokkosCCL\n"
-            << "        Example: --backend mpi-blocking,kc-mpi-blocking\n"
-            << "        (default: mpi-blocking)\n\n"
+            << "        Backend(s), comma-separated, or 'all':\n"
+            << "            mpi     -> MPI backend\n"
+            << "            ccl     -> CCL backend\n"
+            << "            kc-mpi  -> Kokkos MPI backend\n"
+            << "            kc-ccl  -> Kokkos CCL backend\n"
+            << "        Example: --backend mpi,ccl\n"
+            << "        (default: mpi)\n\n"
+
+            << "  --comm-pattern LIST\n"
+            << "        Communication pattern(s), comma-separated, or 'all':\n"
+            << "            blocking   -> blocking communication\n"
+            << "            nonblocking -> non-blocking communication\n"
+            << "        Example: --comm-pattern blocking,nonblocking\n"
+            << "        (default: blocking)\n\n"
 
             << "  --precision LIST\n"
             << "        Precision(s), comma-separated, or 'all':\n"
