@@ -7,7 +7,7 @@
 template <typename real>
 using gs_view = Kokkos::View<real**, Kokkos::LayoutRight>;
 
-template <typename real>
+template <typename real, bool full_stencil = true>
 KOKKOS_INLINE_FUNCTION
 void gs_kernel(
     const int i,
@@ -21,16 +21,27 @@ void gs_kernel(
     const real u_ij = u(i, j);
     const real v_ij = v(i, j);
 
-    // 8-neighbor Laplacian.
-    const real lap_u =
-        u(i - 1, j - 1) + u(i - 1, j) + u(i - 1, j + 1) +
-        u(i,     j - 1) - real(8) * u_ij + u(i,     j + 1) +
-        u(i + 1, j - 1) + u(i + 1, j) + u(i + 1, j + 1);
+    if constexpr (full_stencil) {
 
-    const real lap_v =
-        v(i - 1, j - 1) + v(i - 1, j) + v(i - 1, j + 1) +
-        v(i,     j - 1) - real(8) * v_ij + v(i,     j + 1) +
-        v(i + 1, j - 1) + v(i + 1, j) + v(i + 1, j + 1);
+        // 8-neighbor Laplacian.
+        const real lap_u =
+            u(i - 1, j - 1) + u(i - 1, j) + u(i - 1, j + 1) +
+            u(i,     j - 1) - real(8) * u_ij + u(i,     j + 1) +
+            u(i + 1, j - 1) + u(i + 1, j) + u(i + 1, j + 1);
+
+        const real lap_v =
+            v(i - 1, j - 1) + v(i - 1, j) + v(i - 1, j + 1) +
+            v(i,     j - 1) - real(8) * v_ij + v(i,     j + 1) +
+            v(i + 1, j - 1) + v(i + 1, j) + v(i + 1, j + 1);
+    }else{
+        
+        // 4-neighbor Laplacian.
+        const real lap_u =
+            u(i - 1, j) + u(i, j - 1) - real(4) * u_ij + u(i, j + 1) + u(i + 1, j);
+
+        const real lap_v =
+            v(i - 1, j) + v(i, j - 1) - real(4) * v_ij + v(i, j + 1) + v(i + 1, j);
+    }
 
     // Gray-Scott reaction term: u * v^2.
     const real uvv = u_ij * v_ij * v_ij;
@@ -51,7 +62,7 @@ void gs_kernel(
     v_out(i, j) = v_ij + dt * dv;
 }
 
-template <typename real>
+template <typename real, bool full_stencil = true>
 void gs_compute(
     const gs_view<real>& u,
     const gs_view<real>& v,
@@ -72,11 +83,11 @@ void gs_compute(
         Kokkos::MDRangePolicy<Kokkos::Rank<2>>(
             {1, 1}, {rows - 1, columns - 1}),
         KOKKOS_LAMBDA(const int i, const int j) {
-            gs_kernel(i, j, u_, v_, u_out_, v_out_, c_);
+            gs_kernel<real, full_stencil>(i, j, u_, v_, u_out_, v_out_, c_);
         });
 }
 
-template <typename real>
+template <typename real, bool full_stencil = true>
 void gs_compute_interior(
     const gs_view<real>& u,
     const gs_view<real>& v,
@@ -99,11 +110,11 @@ void gs_compute_interior(
         Kokkos::MDRangePolicy<Kokkos::Rank<2>>(
             {2, 2}, {rows, columns}),
         KOKKOS_LAMBDA(const int i, const int j) {
-            gs_kernel(i, j, u_, v_, u_out_, v_out_, c_);
+            gs_kernel<real, full_stencil>(i, j, u_, v_, u_out_, v_out_, c_);
         });
 }
 
-template <typename real>
+template <typename real, bool full_stencil = true>
 void gs_compute_ring(
     const gs_view<real>& u,
     const gs_view<real>& v,
@@ -124,8 +135,8 @@ void gs_compute_ring(
         "compute ring top/bottom",
         Kokkos::RangePolicy<int>(1, columns + 1),
         KOKKOS_LAMBDA(const int j) {
-            gs_kernel(1, j, u_, v_, u_out_, v_out_, c_);
-            gs_kernel(rows, j, u_, v_, u_out_, v_out_, c_);
+            gs_kernel<real, full_stencil>(1, j, u_, v_, u_out_, v_out_, c_);
+            gs_kernel<real, full_stencil>(rows, j, u_, v_, u_out_, v_out_, c_);
         });
 
     if (rows > 2) {
@@ -133,8 +144,8 @@ void gs_compute_ring(
             "compute ring left/right",
             Kokkos::RangePolicy<int>(2, rows),
             KOKKOS_LAMBDA(const int i) {
-                gs_kernel(i, 1, u_, v_, u_out_, v_out_, c_);
-                gs_kernel(i, columns, u_, v_, u_out_, v_out_, c_);
+                gs_kernel<real, full_stencil>(i, 1, u_, v_, u_out_, v_out_, c_);
+                gs_kernel<real, full_stencil>(i, columns, u_, v_, u_out_, v_out_, c_);
             });
     }
 }
